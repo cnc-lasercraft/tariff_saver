@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from typing import Any
-import voluptuous as vol
 
+import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers import selector
@@ -11,9 +11,9 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_PUBLISH_TIME,
     DEFAULT_PUBLISH_TIME,
-    CONF_TARIFF_NAME,
-    CONF_BASELINE_TARIFF_NAME,
     CONF_CONSUMPTION_ENERGY_ENTITY,
+    CONF_ENABLE_COST_TRACKING,
+    DEFAULT_ENABLE_COST_TRACKING,
     CONF_GRADE_T1,
     CONF_GRADE_T2,
     CONF_GRADE_T3,
@@ -22,19 +22,18 @@ from .const import (
     DEFAULT_GRADE_T2,
     DEFAULT_GRADE_T3,
     DEFAULT_GRADE_T4,
-    CONF_ENABLE_COST_TRACKING,
-    DEFAULT_ENABLE_COST_TRACKING,
 )
 
 
 def _parse_hhmm(value: str) -> str:
+    """Validate HH:MM."""
     try:
         hh, mm = value.strip().split(":")
         h = int(hh)
         m = int(mm)
         if 0 <= h <= 23 and 0 <= m <= 59:
             return f"{h:02d}:{m:02d}"
-    except Exception as err:
+    except Exception as err:  # noqa: BLE001
         raise vol.Invalid("Time must be HH:MM") from err
     raise vol.Invalid("Time must be HH:MM")
 
@@ -50,13 +49,13 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             self._errors = {}
 
+            # Validate publish_time
             try:
-                user_input[CONF_PUBLISH_TIME] = _parse_hhmm(
-                    user_input[CONF_PUBLISH_TIME]
-                )
+                user_input[CONF_PUBLISH_TIME] = _parse_hhmm(user_input[CONF_PUBLISH_TIME])
             except vol.Invalid:
                 self._errors[CONF_PUBLISH_TIME] = "invalid_time"
 
+            # Validate threshold order
             try:
                 t1 = float(user_input[CONF_GRADE_T1])
                 t2 = float(user_input[CONF_GRADE_T2])
@@ -64,7 +63,7 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
                 t4 = float(user_input[CONF_GRADE_T4])
                 if not (t1 <= t2 <= t3 <= t4):
                     self._errors[CONF_GRADE_T4] = "threshold_order"
-            except Exception:
+            except Exception:  # noqa: BLE001
                 self._errors[CONF_GRADE_T4] = "threshold_invalid"
 
             if not self._errors:
@@ -77,61 +76,24 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
             {
                 vol.Required(
                     CONF_PUBLISH_TIME,
-                    default=opt.get(
-                        CONF_PUBLISH_TIME,
-                        dat.get(CONF_PUBLISH_TIME, DEFAULT_PUBLISH_TIME),
-                    ),
-                ): str,
-
-                vol.Optional(
-                    CONF_TARIFF_NAME,
-                    default=opt.get(CONF_TARIFF_NAME, dat.get(CONF_TARIFF_NAME, "")),
-                ): str,
-
-                vol.Optional(
-                    CONF_BASELINE_TARIFF_NAME,
-                    default=opt.get(
-                        CONF_BASELINE_TARIFF_NAME,
-                        dat.get(CONF_BASELINE_TARIFF_NAME, ""),
-                    ),
+                    default=opt.get(CONF_PUBLISH_TIME, dat.get(CONF_PUBLISH_TIME, DEFAULT_PUBLISH_TIME)),
                 ): str,
 
                 vol.Optional(
                     CONF_CONSUMPTION_ENERGY_ENTITY,
                     default=opt.get(CONF_CONSUMPTION_ENERGY_ENTITY, ""),
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="sensor")
-                ),
+                ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
 
                 vol.Optional(
                     CONF_ENABLE_COST_TRACKING,
-                    default=opt.get(
-                        CONF_ENABLE_COST_TRACKING, DEFAULT_ENABLE_COST_TRACKING
-                    ),
+                    default=opt.get(CONF_ENABLE_COST_TRACKING, DEFAULT_ENABLE_COST_TRACKING),
                 ): bool,
 
-                vol.Required(
-                    CONF_GRADE_T1, default=opt.get(CONF_GRADE_T1, DEFAULT_GRADE_T1)
-                ): vol.Coerce(float),
-                vol.Required(
-                    CONF_GRADE_T2, default=opt.get(CONF_GRADE_T2, DEFAULT_GRADE_T2)
-                ): vol.Coerce(float),
-                vol.Required(
-                    CONF_GRADE_T3, default=opt.get(CONF_GRADE_T3, DEFAULT_GRADE_T3)
-                ): vol.Coerce(float),
-                vol.Required(
-                    CONF_GRADE_T4, default=opt.get(CONF_GRADE_T4, DEFAULT_GRADE_T4)
-                ): vol.Coerce(float),
+                vol.Required(CONF_GRADE_T1, default=opt.get(CONF_GRADE_T1, DEFAULT_GRADE_T1)): vol.Coerce(float),
+                vol.Required(CONF_GRADE_T2, default=opt.get(CONF_GRADE_T2, DEFAULT_GRADE_T2)): vol.Coerce(float),
+                vol.Required(CONF_GRADE_T3, default=opt.get(CONF_GRADE_T3, DEFAULT_GRADE_T3)): vol.Coerce(float),
+                vol.Required(CONF_GRADE_T4, default=opt.get(CONF_GRADE_T4, DEFAULT_GRADE_T4)): vol.Coerce(float),
             }
         )
 
-        return self.async_show_form(
-            step_id="init",
-            data_schema=schema,
-            errors=self._errors,
-        )
-
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry):
-        return TariffSaverOptionsFlowHandler(config_entry)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=self._errors)
