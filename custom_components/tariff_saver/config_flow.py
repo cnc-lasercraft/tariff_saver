@@ -74,8 +74,10 @@ class TariffSaverConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, 
             )
 
             return self.async_show_form(step_id="public", data_schema=schema, errors=errors)
-
+            
         tariff_name = user_input["tariff_name"].strip()
+        baseline_tariff_name = user_input.get("baseline_tariff_name", "electricity_standard").strip()
+
 
         # Validate by fetching a short time range (today)
         session = async_get_clientsession(self.hass)
@@ -104,6 +106,7 @@ class TariffSaverConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, 
             data={
                 "mode": MODE_PUBLIC,
                 "tariff_name": tariff_name,
+                "baseline_tariff_name": baseline_tariff_name,
             },
         )
 
