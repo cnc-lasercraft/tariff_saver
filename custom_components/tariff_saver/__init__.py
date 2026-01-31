@@ -12,6 +12,10 @@ from .api import EkzTariffApi
 from .const import DOMAIN, CONF_PUBLISH_TIME, DEFAULT_PUBLISH_TIME
 from .coordinator import TariffSaverCoordinator
 
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up Tariff Saver (YAML not used)."""
+    return True
+
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[str] = ["sensor"]
