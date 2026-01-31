@@ -11,32 +11,59 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class EkzTariffApi:
-    """Simple client for the EKZ tariff API."""
+    """Client for the EKZ tariff API.
+
+    Notes about response structure:
+    - API returns an object with a top-level `prices` list.
+    - Each item contains `start_timestamp` (and usually `end_timestamp`)
+      plus multiple tariff components. We sum all component entries with unit == "CHF_kWh".
+    """
 
     BASE_URL = "https://api.tariffs.ekz.ch/v1"
 
     def __init__(self, session: aiohttp.ClientSession) -> None:
         self._session = session
 
-    async def fetch_tariffs(
+    async def fetch_prices(
         self,
         tariff_name: str,
         start: datetime,
         end: datetime,
     ) -> list[dict[str, Any]]:
-        """Fetch tariff prices from EKZ API."""
+        """Fetch raw price items (entries from `prices`)."""
         params = {
             "tariff_name": tariff_name,
             "start_timestamp": start.isoformat(),
             "end_timestamp": end.isoformat(),
         }
-
         url = f"{self.BASE_URL}/tariffs"
 
         _LOGGER.debug("Fetching EKZ tariffs: %s", params)
 
-        async with self._session.get(url, params=params, timeout=30) as response:
-            response.raise_for_status()
-            data = await response.json()
+        async with self._session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            resp.raise_for_status()
+            payload: dict[str, Any] = await resp.json()
 
-        return data
+        prices = payload.get("prices")
+        if not isinstance(prices, list):
+            raise ValueError(f"Unexpected EKZ payload shape, missing 'prices': {payload!r}")
+
+        return prices
+
+    @staticmethod
+    def sum_chf_per_kwh(price_item: dict[str, Any]) -> float:
+        """Sum all component values where unit == 'CHF_kWh' for a single 15-min slot.
+
+        Returns a NET value (without VAT), as delivered by the API.
+        """
+        total = 0.0
+        for key, val in price_item.items():
+            # Most component fields appear to be lists of objects like:
+            # [{"unit": "CHF_kWh", "value": 0.1234}, ...]
+            if isinstance(val, list):
+                for entry in val:
+                    if isinstance(entry, dict) and entry.get("unit") == "CHF_kWh":
+                        v = entry.get("value")
+                        if isinstance(v, (int, float)):
+                            total += float(v)
+        return total
