@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import timedelta
-from typing import List
+from datetime import datetime, timedelta
+from typing import Any
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from .api import EkzTariffApi
@@ -15,16 +15,17 @@ from .api import EkzTariffApi
 _LOGGER = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True)
 class PriceSlot:
-    start: dt_util.dt.datetime
+    """A single 15-minute price slot."""
+    start: datetime  # UTC, timezone-aware
     price_chf_per_kwh: float
 
 
-class TariffSaverCoordinator(DataUpdateCoordinator[dict[str, List[PriceSlot]]]):
+class TariffSaverCoordinator(DataUpdateCoordinator[dict[str, list[PriceSlot]]]):
     """Fetches and stores tariff price curves."""
 
-    def __init__(self, hass: HomeAssistant, api: EkzTariffApi, config: dict) -> None:
+    def __init__(self, hass: HomeAssistant, api: EkzTariffApi, config: dict[str, Any]) -> None:
         self.hass = hass
         self.api = api
         self.tariff_name: str = config["tariff_name"]
@@ -37,45 +38,57 @@ class TariffSaverCoordinator(DataUpdateCoordinator[dict[str, List[PriceSlot]]]):
             update_interval=timedelta(minutes=15),
         )
 
-    async def _async_update_data(self) -> dict[str, List[PriceSlot]]:
+    async def _async_update_data(self) -> dict[str, list[PriceSlot]]:
+        """Fetch active and optional baseline price curves."""
         now = dt_util.utcnow()
-        start = now.replace(minute=0, second=0, microsecond=0)
-        end = start + timedelta(hours=24)
 
-        data: dict[str, List[PriceSlot]] = {}
+        # Fetch ~24h with a small buffer
+        start = now - timedelta(minutes=15)
+        end = now + timedelta(hours=24)
 
-        # Active tariff
-        prices = await self.api.fetch_prices(self.tariff_name, start, end)
-        data["active"] = self._parse_prices(prices)
+        try:
+            raw_active = await self.api.fetch_prices(self.tariff_name, start, end)
+            active = self._parse_prices(raw_active)
+            if not active:
+                raise UpdateFailed(f"No data returned for active tariff '{self.tariff_name}'")
+        except Exception as err:
+            raise UpdateFailed(f"Active tariff update failed: {err}") from err
 
-        # Baseline tariff (optional)
+        data: dict[str, list[PriceSlot]] = {"active": active}
+
+        # Baseline is optional; if it fails, we keep going.
         if self.baseline_tariff_name:
             try:
-                baseline_prices = await self.api.fetch_prices(
-                    self.baseline_tariff_name, start, end
-                )
-                data["baseline"] = self._parse_prices(baseline_prices)
+                raw_base = await self.api.fetch_prices(self.baseline_tariff_name, start, end)
+                data["baseline"] = self._parse_prices(raw_base)
             except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("Failed to fetch baseline tariff: %s", err)
+                _LOGGER.warning("Failed to fetch baseline tariff '%s': %s", self.baseline_tariff_name, err)
                 data["baseline"] = []
+        else:
+            data["baseline"] = []
 
         return data
 
     @staticmethod
-    def _parse_prices(raw_prices) -> List[PriceSlot]:
-        slots: List[PriceSlot] = []
+    def _parse_prices(raw_prices: list[dict[str, Any]]) -> list[PriceSlot]:
+        """Parse EKZ price items to sorted, de-duplicated UTC slots."""
+        slots: list[PriceSlot] = []
+
         for item in raw_prices:
             start_ts = item.get("start_timestamp")
-            if not start_ts:
+            if not isinstance(start_ts, str):
                 continue
 
-            price = EkzTariffApi.sum_chf_per_kwh(item)
-            slots.append(
-                PriceSlot(
-                    start=dt_util.parse_datetime(start_ts),
-                    price_chf_per_kwh=price,
-                )
-            )
+            dt_start = dt_util.parse_datetime(start_ts)
+            if dt_start is None:
+                continue
 
+            dt_start_utc = dt_util.as_utc(dt_start)
+            price = EkzTariffApi.sum_chf_per_kwh(item)
+
+            slots.append(PriceSlot(start=dt_start_utc, price_chf_per_kwh=price))
+
+        # sort + dedup by start
         slots.sort(key=lambda s: s.start)
-        return slots
+        dedup: dict[datetime, PriceSlot] = {s.start: s for s in slots}
+        return list(dedup.values())
