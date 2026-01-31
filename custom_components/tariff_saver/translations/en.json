@@ -2,6 +2,11 @@
   "config": {
     "abort": {
       "single_instance_allowed": "Only one Tariff Saver instance is allowed."
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the tariff API. Please try again.",
+      "no_data": "No price data returned for this tariff name. Please check the name and try again.",
+      "unknown": "Unexpected error. Please check the logs for details."
     }
   }
 }
