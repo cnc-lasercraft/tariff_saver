@@ -1,17 +1,26 @@
 """Config flow for Tariff Saver (EKZ / myEKZ OAuth2)."""
 from __future__ import annotations
 
+import logging
+
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers import config_entry_oauth2_flow
 
 from .const import DOMAIN
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class TariffSaverConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domain=DOMAIN):
     """Handle a config flow for Tariff Saver using OAuth2."""
 
     VERSION = 3
+
+    @property
+    def logger(self) -> logging.Logger:
+        """Return logger for the OAuth2 flow handler."""
+        return _LOGGER
 
     async def async_step_user(self, user_input=None):
         """Start OAuth2 flow."""
