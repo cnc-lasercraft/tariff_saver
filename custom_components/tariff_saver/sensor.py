@@ -190,6 +190,9 @@ class TariffSaverCheapestWindowsSensor(CoordinatorEntity[TariffSaverCoordinator]
         baseline_map: dict,
         window_slots: int,
     ) -> dict[str, Any] | None:
+        # ✅ Ignore slots with invalid / unpublished prices (0 CHF/kWh)
+        slots = [s for s in slots if s.price_chf_per_kwh > 0]
+
         if len(slots) < window_slots:
             return None
 
@@ -226,11 +229,11 @@ class TariffSaverCheapestWindowsSensor(CoordinatorEntity[TariffSaverCoordinator]
             "start": best_start.isoformat(),
             "end": best_end.isoformat(),
 
-            # Gerundet (für Anzeige)
+            # Anzeige-Werte
             "avg_chf_per_kwh": round(avg_chf, 6),
             "avg_rp_per_kwh": round(avg_rp, 3),
 
-            # Rohwerte (Debug / Nachvollziehbarkeit)
+            # Rohwerte zum Debuggen
             "avg_chf_per_kwh_raw": avg_chf,
             "avg_rp_per_kwh_raw": avg_rp,
         }
