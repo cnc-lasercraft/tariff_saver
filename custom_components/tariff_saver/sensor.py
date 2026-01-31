@@ -37,6 +37,7 @@ async def async_setup_entry(
             TariffSaverPriceCurveSensor(coordinator, entry),
             TariffSaverPriceNowSensor(coordinator, entry),
             TariffSaverNextPriceSensor(coordinator, entry),
+            TariffSaverSavingsNext24hSensor(coordinator, entry),
         ],
         update_before_add=True,
     )
@@ -97,8 +98,8 @@ class TariffSaverPriceNowSensor(CoordinatorEntity[TariffSaverCoordinator], Senso
             return None
 
         now = dt_util.utcnow()
-
         current: PriceSlot | None = None
+
         for s in slots:
             if s.start <= now:
                 current = s
@@ -125,7 +126,9 @@ class TariffSaverPriceNowSensor(CoordinatorEntity[TariffSaverCoordinator], Senso
             "tariff_name": self.coordinator.tariff_name,
             "baseline_tariff_name": self.coordinator.baseline_tariff_name,
             "next_start": next_slot.start.isoformat() if next_slot else None,
-            "next_price_chf_per_kwh": round(next_slot.price_chf_per_kwh, 6) if next_slot else None,
+            "next_price_chf_per_kwh": round(next_slot.price_chf_per_kwh, 6)
+            if next_slot
+            else None,
             "updated_at": dt_util.utcnow().isoformat(),
         }
 
@@ -161,4 +164,56 @@ class TariffSaverNextPriceSensor(CoordinatorEntity[TariffSaverCoordinator], Sens
             "tariff_name": self.coordinator.tariff_name,
             "baseline_tariff_name": self.coordinator.baseline_tariff_name,
             "updated_at": dt_util.utcnow().isoformat(),
+        }
+
+
+class TariffSaverSavingsNext24hSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
+    """Estimated savings for the next 24h vs baseline (CHF), assuming 1 kW constant load."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Savings next 24h"
+    _attr_native_unit_of_measurement = "CHF"
+    _attr_icon = "mdi:piggy-bank-outline"
+
+    def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_savings_next24h"
+
+    @property
+    def native_value(self) -> float | None:
+        active = _active_slots(self.coordinator)
+        baseline = _baseline_slots(self.coordinator)
+
+        if not active or not baseline:
+            return None
+
+        # Index baseline by slot start for alignment
+        baseline_map = {s.start: s.price_chf_per_kwh for s in baseline}
+
+        # Assume constant 1 kW load → 0.25 kWh per 15-min slot
+        kwh_per_slot = 0.25
+
+        savings = 0.0
+        matched = 0
+
+        for s in active:
+            base_price = baseline_map.get(s.start)
+            if base_price is None:
+                continue
+
+            matched += 1
+            savings += (base_price - s.price_chf_per_kwh) * kwh_per_slot
+
+        if matched == 0:
+            return None
+
+        # Positive = cheaper than baseline
+        return round(savings, 2)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "tariff_name": self.coordinator.tariff_name,
+            "baseline_tariff_name": self.coordinator.baseline_tariff_name,
+            "assumption": "1 kW constant load (0.25 kWh per 15 min)",
         }
