@@ -1,6 +1,7 @@
 """Config flow for Tariff Saver."""
 from __future__ import annotations
 
+import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 
@@ -17,7 +18,19 @@ class TariffSaverConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._async_current_entries():
             return self.async_abort(reason="single_instance_allowed")
 
-        return self.async_create_entry(title="Tariff Saver", data={})
+        if user_input is None:
+            schema = vol.Schema(
+                {
+                    vol.Required("tariff_name"): str,
+                }
+            )
+            return self.async_show_form(step_id="user", data_schema=schema)
+
+        tariff_name = user_input["tariff_name"].strip()
+        return self.async_create_entry(
+            title=f"Tariff Saver ({tariff_name})",
+            data={"tariff_name": tariff_name},
+        )
 
     @staticmethod
     @callback
