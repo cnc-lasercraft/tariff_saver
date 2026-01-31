@@ -7,14 +7,15 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers import config_entry_oauth2_flow
 
-from .const import DOMAIN
+from .const import DOMAIN as TS_DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class TariffSaverConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domain=DOMAIN):
+class TariffSaverConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domain=TS_DOMAIN):
     """Handle a config flow for Tariff Saver using OAuth2."""
 
+    DOMAIN = TS_DOMAIN
     VERSION = 3
 
     @property
@@ -27,14 +28,10 @@ class TariffSaverConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, 
         if self._async_current_entries():
             return self.async_abort(reason="single_instance_allowed")
 
-        # Start the standard Home Assistant OAuth2 flow.
         return await super().async_step_user(user_input)
 
     async def async_oauth_create_entry(self, data: dict) -> config_entries.ConfigEntry:
-        """Create the config entry after OAuth2 is complete.
-
-        `data` contains the OAuth2 token dict.
-        """
+        """Create the config entry after OAuth2 is complete."""
         return self.async_create_entry(title="Tariff Saver (myEKZ)", data=data)
 
     @staticmethod
