@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import timedelta
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
@@ -14,6 +15,9 @@ from .const import DOMAIN
 from .coordinator import TariffSaverCoordinator, PriceSlot
 
 
+# -------------------------------------------------------------------
+# Helpers
+# -------------------------------------------------------------------
 def _active_slots(coordinator: TariffSaverCoordinator) -> list[PriceSlot]:
     data = coordinator.data or {}
     return data.get("active", []) if isinstance(data, dict) else []
@@ -24,6 +28,9 @@ def _baseline_slots(coordinator: TariffSaverCoordinator) -> list[PriceSlot]:
     return data.get("baseline", []) if isinstance(data, dict) else []
 
 
+# -------------------------------------------------------------------
+# Setup
+# -------------------------------------------------------------------
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -38,18 +45,21 @@ async def async_setup_entry(
             TariffSaverPriceNowSensor(coordinator, entry),
             TariffSaverNextPriceSensor(coordinator, entry),
             TariffSaverSavingsNext24hSensor(coordinator, entry),
+            TariffSaverCheapestWindowsSensor(coordinator, entry),
         ],
         update_before_add=True,
     )
 
 
+# -------------------------------------------------------------------
+# Sensors
+# -------------------------------------------------------------------
 class TariffSaverPriceCurveSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
-    """Exposes the full 15-min active price curve as attributes (time series source)."""
+    """Exposes the full 15-min active price curve as attributes."""
 
     _attr_has_entity_name = True
     _attr_name = "Price curve"
     _attr_icon = "mdi:chart-line"
-    _attr_native_unit_of_measurement = None  # attribute-only sensor
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
@@ -62,25 +72,24 @@ class TariffSaverPriceCurveSensor(CoordinatorEntity[TariffSaverCoordinator], Sen
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        active = _active_slots(self.coordinator)
-        slots_attr = [
-            {
-                "start": s.start.isoformat(),
-                "price_chf_per_kwh": round(s.price_chf_per_kwh, 6),
-            }
-            for s in active
-        ]
+        slots = _active_slots(self.coordinator)
         return {
             "tariff_name": self.coordinator.tariff_name,
             "baseline_tariff_name": self.coordinator.baseline_tariff_name,
-            "slot_count": len(slots_attr),
-            "slots": slots_attr,
+            "slot_count": len(slots),
+            "slots": [
+                {
+                    "start": s.start.isoformat(),
+                    "price_chf_per_kwh": round(s.price_chf_per_kwh, 6),
+                }
+                for s in slots
+            ],
             "updated_at": dt_util.utcnow().isoformat(),
         }
 
 
 class TariffSaverPriceNowSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
-    """Shows the current electricity price (CHF/kWh) for the active tariff."""
+    """Current electricity price."""
 
     _attr_has_entity_name = True
     _attr_name = "Price now"
@@ -111,30 +120,9 @@ class TariffSaverPriceNowSensor(CoordinatorEntity[TariffSaverCoordinator], Senso
 
         return round(current.price_chf_per_kwh, 6)
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        slots = _active_slots(self.coordinator)
-        now = dt_util.utcnow()
-
-        next_slot: PriceSlot | None = None
-        for s in slots:
-            if s.start > now:
-                next_slot = s
-                break
-
-        return {
-            "tariff_name": self.coordinator.tariff_name,
-            "baseline_tariff_name": self.coordinator.baseline_tariff_name,
-            "next_start": next_slot.start.isoformat() if next_slot else None,
-            "next_price_chf_per_kwh": round(next_slot.price_chf_per_kwh, 6)
-            if next_slot
-            else None,
-            "updated_at": dt_util.utcnow().isoformat(),
-        }
-
 
 class TariffSaverNextPriceSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
-    """Shows the next electricity price (CHF/kWh) for the active tariff."""
+    """Next electricity price."""
 
     _attr_has_entity_name = True
     _attr_name = "Next price"
@@ -155,16 +143,7 @@ class TariffSaverNextPriceSensor(CoordinatorEntity[TariffSaverCoordinator], Sens
         for s in slots:
             if s.start > now:
                 return round(s.price_chf_per_kwh, 6)
-
         return None
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        return {
-            "tariff_name": self.coordinator.tariff_name,
-            "baseline_tariff_name": self.coordinator.baseline_tariff_name,
-            "updated_at": dt_util.utcnow().isoformat(),
-        }
 
 
 class TariffSaverSavingsNext24hSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
@@ -183,37 +162,103 @@ class TariffSaverSavingsNext24hSensor(CoordinatorEntity[TariffSaverCoordinator],
     def native_value(self) -> float | None:
         active = _active_slots(self.coordinator)
         baseline = _baseline_slots(self.coordinator)
-
         if not active or not baseline:
             return None
 
-        # Index baseline by slot start for alignment
         baseline_map = {s.start: s.price_chf_per_kwh for s in baseline}
-
-        # Assume constant 1 kW load → 0.25 kWh per 15-min slot
-        kwh_per_slot = 0.25
+        kwh_per_slot = 0.25  # 15 min
 
         savings = 0.0
         matched = 0
-
         for s in active:
-            base_price = baseline_map.get(s.start)
-            if base_price is None:
+            base = baseline_map.get(s.start)
+            if base is None:
                 continue
-
             matched += 1
-            savings += (base_price - s.price_chf_per_kwh) * kwh_per_slot
+            savings += (base - s.price_chf_per_kwh) * kwh_per_slot
 
-        if matched == 0:
+        return round(savings, 2) if matched else None
+
+
+class TariffSaverCheapestWindowsSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
+    """Cheapest windows for multiple durations."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Cheapest windows"
+    _attr_icon = "mdi:calendar-clock"
+
+    def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_cheapest_windows"
+
+    @staticmethod
+    def _best_window(
+        slots: list[PriceSlot],
+        baseline_map: dict,
+        window_slots: int,
+    ) -> dict[str, Any] | None:
+        if len(slots) < window_slots:
             return None
 
-        # Positive = cheaper than baseline
-        return round(savings, 2)
+        best_sum = float("inf")
+        best_start = None
+        best_end = None
+        best_savings = None
+
+        kwh_per_slot = 0.25
+
+        for i in range(len(slots) - window_slots + 1):
+            window = slots[i : i + window_slots]
+            s = sum(x.price_chf_per_kwh for x in window)
+
+            if s < best_sum:
+                best_sum = s
+                best_start = window[0].start
+                best_end = window[-1].start + timedelta(minutes=15)
+
+                if baseline_map:
+                    save = 0.0
+                    matched = 0
+                    for x in window:
+                        base = baseline_map.get(x.start)
+                        if base is not None:
+                            save += (base - x.price_chf_per_kwh) * kwh_per_slot
+                            matched += 1
+                    best_savings = round(save, 2) if matched else None
+
+        avg = best_sum / window_slots
+        result = {
+            "start": best_start.isoformat(),
+            "end": best_end.isoformat(),
+            "avg_chf_per_kwh": round(avg, 6),
+            "avg_rp_per_kwh": round(avg * 100, 2),
+        }
+        if best_savings is not None:
+            result["savings_vs_baseline_chf"] = best_savings
+
+        return result
+
+    @property
+    def native_value(self) -> float | None:
+        slots = sorted(_active_slots(self.coordinator), key=lambda s: s.start)
+        if not slots:
+            return None
+
+        best_1h = self._best_window(slots, {}, 4)
+        return best_1h["avg_chf_per_kwh"] if best_1h else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        slots = sorted(_active_slots(self.coordinator), key=lambda s: s.start)
+        baseline = _baseline_slots(self.coordinator)
+        baseline_map = {s.start: s.price_chf_per_kwh for s in baseline} if baseline else {}
+
         return {
             "tariff_name": self.coordinator.tariff_name,
             "baseline_tariff_name": self.coordinator.baseline_tariff_name,
-            "assumption": "1 kW constant load (0.25 kWh per 15 min)",
+            "best_30m": self._best_window(slots, baseline_map, 2),
+            "best_1h": self._best_window(slots, baseline_map, 4),
+            "best_2h": self._best_window(slots, baseline_map, 8),
+            "best_3h": self._best_window(slots, baseline_map, 12),
+            "updated_at": dt_util.utcnow().isoformat(),
         }
