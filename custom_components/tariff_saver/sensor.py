@@ -24,7 +24,14 @@ async def async_setup_entry(
 ) -> None:
     """Set up sensors from a config entry."""
     coordinator: TariffSaverCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([TariffSaverPriceNowSensor(coordinator, entry)], update_before_add=True)
+    async_add_entities(
+        [
+        TariffSaverPriceNowSensor(coordinator, entry),
+        TariffSaverNextPriceSensor(coordinator, entry),
+        ],
+        update_before_add=True,
+        )
+
 
 
 class TariffSaverPriceNowSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
