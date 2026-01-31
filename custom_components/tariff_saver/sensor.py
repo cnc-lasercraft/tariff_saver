@@ -14,6 +14,16 @@ from .const import DOMAIN
 from .coordinator import TariffSaverCoordinator, PriceSlot
 
 
+def _active_slots(coordinator: TariffSaverCoordinator) -> list[PriceSlot]:
+    data = coordinator.data or {}
+    return data.get("active", []) if isinstance(data, dict) else []
+
+
+def _baseline_slots(coordinator: TariffSaverCoordinator) -> list[PriceSlot]:
+    data = coordinator.data or {}
+    return data.get("baseline", []) if isinstance(data, dict) else []
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -33,7 +43,7 @@ async def async_setup_entry(
 
 
 class TariffSaverPriceCurveSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
-    """Exposes the full 15-min price curve as attributes (time series source)."""
+    """Exposes the full 15-min active price curve as attributes (time series source)."""
 
     _attr_has_entity_name = True
     _attr_name = "Price curve"
@@ -46,22 +56,22 @@ class TariffSaverPriceCurveSensor(CoordinatorEntity[TariffSaverCoordinator], Sen
 
     @property
     def native_value(self) -> int | None:
-        """Expose slot count as state (keeps sensor usable in UI)."""
-        slots = self.coordinator.data or []
+        slots = _active_slots(self.coordinator)
         return len(slots) if slots else None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        slots = self.coordinator.data or []
+        active = _active_slots(self.coordinator)
         slots_attr = [
             {
                 "start": s.start.isoformat(),
                 "price_chf_per_kwh": round(s.price_chf_per_kwh, 6),
             }
-            for s in slots
+            for s in active
         ]
         return {
             "tariff_name": self.coordinator.tariff_name,
+            "baseline_tariff_name": self.coordinator.baseline_tariff_name,
             "slot_count": len(slots_attr),
             "slots": slots_attr,
             "updated_at": dt_util.utcnow().isoformat(),
@@ -69,7 +79,7 @@ class TariffSaverPriceCurveSensor(CoordinatorEntity[TariffSaverCoordinator], Sen
 
 
 class TariffSaverPriceNowSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
-    """Shows the current electricity price (CHF/kWh)."""
+    """Shows the current electricity price (CHF/kWh) for the active tariff."""
 
     _attr_has_entity_name = True
     _attr_name = "Price now"
@@ -82,8 +92,7 @@ class TariffSaverPriceNowSensor(CoordinatorEntity[TariffSaverCoordinator], Senso
 
     @property
     def native_value(self) -> float | None:
-        """Return the current price based on the latest slot <= now."""
-        slots = self.coordinator.data or []
+        slots = _active_slots(self.coordinator)
         if not slots:
             return None
 
@@ -97,15 +106,13 @@ class TariffSaverPriceNowSensor(CoordinatorEntity[TariffSaverCoordinator], Senso
                 break
 
         if current is None:
-            # If all slots are in the future, show the first available slot as fallback
             return round(slots[0].price_chf_per_kwh, 6)
 
         return round(current.price_chf_per_kwh, 6)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Small helpful attributes (without duplicating full slot list)."""
-        slots = self.coordinator.data or []
+        slots = _active_slots(self.coordinator)
         now = dt_util.utcnow()
 
         next_slot: PriceSlot | None = None
@@ -116,6 +123,7 @@ class TariffSaverPriceNowSensor(CoordinatorEntity[TariffSaverCoordinator], Senso
 
         return {
             "tariff_name": self.coordinator.tariff_name,
+            "baseline_tariff_name": self.coordinator.baseline_tariff_name,
             "next_start": next_slot.start.isoformat() if next_slot else None,
             "next_price_chf_per_kwh": round(next_slot.price_chf_per_kwh, 6) if next_slot else None,
             "updated_at": dt_util.utcnow().isoformat(),
@@ -123,7 +131,7 @@ class TariffSaverPriceNowSensor(CoordinatorEntity[TariffSaverCoordinator], Senso
 
 
 class TariffSaverNextPriceSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
-    """Shows the next electricity price (CHF/kWh)."""
+    """Shows the next electricity price (CHF/kWh) for the active tariff."""
 
     _attr_has_entity_name = True
     _attr_name = "Next price"
@@ -136,7 +144,7 @@ class TariffSaverNextPriceSensor(CoordinatorEntity[TariffSaverCoordinator], Sens
 
     @property
     def native_value(self) -> float | None:
-        slots = self.coordinator.data or []
+        slots = _active_slots(self.coordinator)
         if not slots:
             return None
 
@@ -151,5 +159,6 @@ class TariffSaverNextPriceSensor(CoordinatorEntity[TariffSaverCoordinator], Sens
     def extra_state_attributes(self) -> dict[str, Any]:
         return {
             "tariff_name": self.coordinator.tariff_name,
+            "baseline_tariff_name": self.coordinator.baseline_tariff_name,
             "updated_at": dt_util.utcnow().isoformat(),
         }
