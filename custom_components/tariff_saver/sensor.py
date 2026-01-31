@@ -4,7 +4,11 @@ from __future__ import annotations
 from typing import Any
 from datetime import timedelta
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import (
+    SensorEntity,
+    SensorDeviceClass,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -13,6 +17,10 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import TariffSaverCoordinator, PriceSlot
+from .storage import TariffSaverStore
+
+# Local polling for store-based sensors (no API polling)
+SCAN_INTERVAL = timedelta(seconds=30)
 
 
 # -------------------------------------------------------------------
@@ -26,6 +34,10 @@ def _active_slots(coordinator: TariffSaverCoordinator) -> list[PriceSlot]:
 def _baseline_slots(coordinator: TariffSaverCoordinator) -> list[PriceSlot]:
     data = coordinator.data or {}
     return data.get("baseline", []) if isinstance(data, dict) else []
+
+
+def _get_store(hass: HomeAssistant, entry: ConfigEntry) -> TariffSaverStore | None:
+    return hass.data.get(DOMAIN, {}).get(f"{entry.entry_id}_store")
 
 
 # -------------------------------------------------------------------
@@ -46,6 +58,11 @@ async def async_setup_entry(
             TariffSaverNextPriceSensor(coordinator, entry),
             TariffSaverSavingsNext24hSensor(coordinator, entry),
             TariffSaverCheapestWindowsSensor(coordinator, entry),
+
+            # --- NEW: actuals from store ---
+            TariffSaverActualCostTodaySensor(hass, coordinator, entry),
+            TariffSaverActualBaselineCostTodaySensor(hass, coordinator, entry),
+            TariffSaverActualSavingsTodaySensor(hass, coordinator, entry),
         ],
         update_before_add=True,
     )
@@ -265,4 +282,102 @@ class TariffSaverCheapestWindowsSensor(CoordinatorEntity[TariffSaverCoordinator]
             "best_1h": self._best_window(slots, baseline_map, 4),
             "best_2h": self._best_window(slots, baseline_map, 8),
             "best_3h": self._best_window(slots, baseline_map, 12),
+        }
+
+
+# -------------------------------------------------------------------
+# NEW: Store-based "actual" sensors
+# -------------------------------------------------------------------
+class _TariffSaverActualBase(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
+    """Base class for store-based sensors (polling)."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = "CHF"
+    _attr_should_poll = True  # we want periodic updates from store
+
+    def __init__(self, hass: HomeAssistant, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self.hass = hass
+        self.entry = entry
+        self._store: TariffSaverStore | None = None
+
+    def _totals(self) -> tuple[float, float, float] | None:
+        store = _get_store(self.hass, self.entry)
+        if not store:
+            return None
+        return store.compute_today_totals()
+
+    def update(self) -> None:
+        # called by polling; just refresh internal state by reading store
+        self._store = _get_store(self.hass, self.entry)
+
+
+class TariffSaverActualCostTodaySensor(_TariffSaverActualBase):
+    """Actual cost today (dynamic tariff), CHF."""
+
+    _attr_name = "Actual cost today"
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, hass: HomeAssistant, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(hass, coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_actual_cost_today_chf"
+
+    @property
+    def native_value(self) -> float | None:
+        t = self._totals()
+        if not t:
+            return None
+        dyn, _, _ = t
+        return round(dyn, 4)
+
+
+class TariffSaverActualBaselineCostTodaySensor(_TariffSaverActualBase):
+    """Baseline cost today (baseline tariff), CHF."""
+
+    _attr_name = "Baseline cost today"
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, hass: HomeAssistant, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(hass, coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_actual_baseline_cost_today_chf"
+
+    @property
+    def native_value(self) -> float | None:
+        t = self._totals()
+        if not t:
+            return None
+        _, base, _ = t
+        return round(base, 4)
+
+
+class TariffSaverActualSavingsTodaySensor(_TariffSaverActualBase):
+    """Actual savings today vs baseline, CHF."""
+
+    _attr_name = "Actual savings today"
+    _attr_state_class = None  # can go up/down depending on day & tariffs
+
+    def __init__(self, hass: HomeAssistant, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(hass, coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_actual_savings_today_chf"
+
+    @property
+    def native_value(self) -> float | None:
+        t = self._totals()
+        if not t:
+            return None
+        _, _, savings = t
+        return round(savings, 4)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        t = self._totals()
+        if not t:
+            return {}
+        dyn, base, savings = t
+        return {
+            "actual_cost_today_chf": round(dyn, 4),
+            "baseline_cost_today_chf": round(base, 4),
+            "actual_savings_today_chf": round(savings, 4),
+            "source": "tariff_saver store (finalized 15-min slots)",
         }
