@@ -14,9 +14,10 @@ class EkzTariffApi:
     """Client for the EKZ tariff API.
 
     Notes about response structure:
-    - API returns an object with a top-level `prices` list.
-    - Each item contains `start_timestamp` (and usually `end_timestamp`)
-      plus multiple tariff components. We sum all component entries with unit == "CHF_kWh".
+    - /v1/tariffs returns an object with a top-level `prices` list.
+    - Each price item contains `start_timestamp` (and usually `end_timestamp`)
+      plus multiple tariff component fields.
+    - We sum all component entries where unit == "CHF_kWh".
     """
 
     BASE_URL = "https://api.tariffs.ekz.ch/v1"
@@ -40,7 +41,11 @@ class EkzTariffApi:
 
         _LOGGER.debug("Fetching EKZ tariffs: %s", params)
 
-        async with self._session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+        async with self._session.get(
+            url,
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
             resp.raise_for_status()
             payload: dict[str, Any] = await resp.json()
 
@@ -50,6 +55,34 @@ class EkzTariffApi:
 
         return prices
 
+    async def fetch_customer_tariffs(self, access_token: str) -> list[dict[str, Any]]:
+        """Fetch customer-specific tariffs using OAuth access token."""
+        url = f"{self.BASE_URL}/customerTariffs"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+        }
+
+        _LOGGER.debug("Fetching customer tariffs")
+
+        async with self._session.get(
+            url,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            resp.raise_for_status()
+            payload: Any = await resp.json()
+
+        # Some APIs return a plain list, others wrap it in an object.
+        if isinstance(payload, list):
+            return payload
+
+        if isinstance(payload, dict):
+            tariffs = payload.get("tariffs")
+            if isinstance(tariffs, list):
+                return tariffs
+
+        raise ValueError(f"Unexpected customerTariffs payload: {payload!r}")
+
     @staticmethod
     def sum_chf_per_kwh(price_item: dict[str, Any]) -> float:
         """Sum all component values where unit == 'CHF_kWh' for a single 15-min slot.
@@ -57,7 +90,7 @@ class EkzTariffApi:
         Returns a NET value (without VAT), as delivered by the API.
         """
         total = 0.0
-        for key, val in price_item.items():
+        for _key, val in price_item.items():
             # Most component fields appear to be lists of objects like:
             # [{"unit": "CHF_kWh", "value": 0.1234}, ...]
             if isinstance(val, list):
