@@ -237,9 +237,21 @@ class TariffSaverCheapestWindowsSensor(CoordinatorEntity[TariffSaverCoordinator]
         result: dict[str, Any] = {
             "start": best_start.isoformat(),
             "end": best_end.isoformat(),
-            "avg_chf_per_kwh": round(avg_chf, 6),
-            "avg_rp_per_kwh": round(avg_rp, 2),
-        }
+            avg_chf = best_sum / window_slots
+            avg_rp = avg_chf * 100
+
+            result: dict[str, Any] = {
+                "start": best_start.isoformat(),
+                "end": best_end.isoformat(),
+                "avg_chf_per_kwh": round(avg_chf, 6),
+    
+                # Mehr Präzision, damit nichts "zu 0.0" rundet:
+                "avg_rp_per_kwh": round(avg_rp, 3),
+    
+                # Rohwerte zum Debuggen (nicht gerundet):
+                "avg_chf_per_kwh_raw": avg_chf,
+                "avg_rp_per_kwh_raw": avg_rp,
+            }
         if best_savings is not None:
             result["savings_vs_baseline_chf"] = round(best_savings, 2)
 
