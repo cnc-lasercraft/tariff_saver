@@ -22,7 +22,7 @@ class BookedSlot:
 class TariffSaverStore:
     """Persists recent energy samples, price slots and finalized 15-min slots."""
 
-    STORAGE_VERSION = 2  # 🔺 bumped due to schema extension
+    STORAGE_VERSION = 2  # bumped due to schema extension
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
         self.hass = hass
@@ -37,7 +37,7 @@ class TariffSaverStore:
         self.samples: list[tuple[datetime, float]] = []  # (utc_dt, kwh_total)
         self.booked_slots: dict[datetime, BookedSlot] = {}  # slot_end (local tz aligned) -> booked
 
-        # 🔹 NEW: price slots (UTC start -> prices)
+        # price slots (UTC start -> prices)
         # key: slot_start_utc (datetime, tz-aware UTC)
         # val: {"dyn": float, "base": float}
         self.price_slots: dict[datetime, dict[str, float]] = {}
@@ -58,6 +58,7 @@ class TariffSaverStore:
                 ts = dt_util.parse_datetime(ts_str)
                 if ts is None:
                     continue
+                # stored as UTC
                 if ts.tzinfo is None:
                     ts = dt_util.as_utc(ts)
                 self.samples.append((ts, float(kwh)))
@@ -71,6 +72,7 @@ class TariffSaverStore:
                 end_dt = dt_util.parse_datetime(end_str)
                 if end_dt is None:
                     continue
+                # slot_end stored as local time with tz
                 if end_dt.tzinfo is None:
                     end_dt = dt_util.as_local(dt_util.as_utc(end_dt))
                 self.booked_slots[end_dt] = BookedSlot(
@@ -82,7 +84,7 @@ class TariffSaverStore:
             except Exception:
                 continue
 
-        # ---- price slots (NEW) ----
+        # ---- price slots ----
         self.price_slots = {}
         for start_str, payload in data.get("price_slots", {}).items():
             try:
@@ -109,7 +111,6 @@ class TariffSaverStore:
                 }
                 for end, b in self.booked_slots.items()
             },
-            # 🔹 NEW
             "price_slots": {
                 dt_util.as_utc(start).isoformat(): {
                     "dyn": p["dyn"],
@@ -156,7 +157,7 @@ class TariffSaverStore:
             return None
         return kwh_end - kwh_start
 
-    # ---------- price slots (NEW) ----------
+    # ---------- price slots ----------
     def set_price_slot(self, slot_start_utc: datetime, dyn_chf_per_kwh: float, base_chf_per_kwh: float) -> None:
         slot_start_utc = dt_util.as_utc(slot_start_utc)
         self.price_slots[slot_start_utc] = {
@@ -211,3 +212,60 @@ class TariffSaverStore:
                 base_total += b.base_chf
 
         return dyn_total, base_total, (base_total - dyn_total)
+
+    # ---------- slot finalization ----------
+    @staticmethod
+    def _floor_15min_utc(ts: datetime) -> datetime:
+        ts = dt_util.as_utc(ts)
+        minute = (ts.minute // 15) * 15
+        return ts.replace(minute=minute, second=0, microsecond=0)
+
+    def finalize_due_slots(self, now_utc: datetime) -> int:
+        """Finalize all fully completed 15-min slots up to now.
+        Returns number of newly booked slots.
+        """
+        now_utc = dt_util.as_utc(now_utc)
+        slot_end_utc = self._floor_15min_utc(now_utc)  # end boundary of current slot (not included)
+        booked = 0
+
+        # Try last 3 hours (handles restarts)
+        for i in range(1, 12 + 1):  # 12 * 15min = 3h
+            end_utc = slot_end_utc - timedelta(minutes=15 * (i - 1))
+            start_utc = end_utc - timedelta(minutes=15)
+
+            end_local = dt_util.as_local(end_utc)
+            start_local = dt_util.as_local(start_utc)
+
+            if self.is_slot_booked(end_local):
+                continue
+
+            kwh = self.delta_kwh(start_local, end_local)
+            if kwh is None:
+                self.book_slot_status(end_local, "missing_samples")
+                booked += 1
+                continue
+
+            p = self.get_price_slot(start_utc)
+            if not p:
+                self.book_slot_status(end_local, "unpriced")
+                booked += 1
+                continue
+
+            dyn = p.get("dyn")
+            base = p.get("base")
+            if (
+                not isinstance(dyn, (int, float))
+                or not isinstance(base, (int, float))
+                or dyn <= 0
+                or base <= 0
+            ):
+                self.book_slot_status(end_local, "invalid")
+                booked += 1
+                continue
+
+            dyn_chf = float(kwh) * float(dyn)
+            base_chf = float(kwh) * float(base)
+            self.book_slot_ok(end_local, float(kwh), dyn_chf, base_chf)
+            booked += 1
+
+        return booked
