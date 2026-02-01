@@ -1,4 +1,4 @@
-"""Lightweight persistent storage for Tariff Saver (samples + booked slots)."""
+"""Lightweight persistent storage for Tariff Saver (samples + booked slots + price slots)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,9 +20,9 @@ class BookedSlot:
 
 
 class TariffSaverStore:
-    """Persists recent energy samples and finalized 15-min slots."""
+    """Persists recent energy samples, price slots and finalized 15-min slots."""
 
-    STORAGE_VERSION = 1
+    STORAGE_VERSION = 2  # 🔺 bumped due to schema extension
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
         self.hass = hass
@@ -37,6 +37,11 @@ class TariffSaverStore:
         self.samples: list[tuple[datetime, float]] = []  # (utc_dt, kwh_total)
         self.booked_slots: dict[datetime, BookedSlot] = {}  # slot_end (local tz aligned) -> booked
 
+        # 🔹 NEW: price slots (UTC start -> prices)
+        # key: slot_start_utc (datetime, tz-aware UTC)
+        # val: {"dyn": float, "base": float}
+        self.price_slots: dict[datetime, dict[str, float]] = {}
+
         # runtime flags
         self.dirty: bool = False
         self.last_sample_ts: datetime | None = None
@@ -46,26 +51,26 @@ class TariffSaverStore:
         if not data:
             return
 
+        # ---- samples ----
         self.samples = []
         for ts_str, kwh in data.get("samples", []):
             try:
                 ts = dt_util.parse_datetime(ts_str)
                 if ts is None:
                     continue
-                # stored as UTC
                 if ts.tzinfo is None:
                     ts = dt_util.as_utc(ts)
                 self.samples.append((ts, float(kwh)))
             except Exception:
                 continue
 
+        # ---- booked slots ----
         self.booked_slots = {}
         for end_str, payload in data.get("booked_slots", {}).items():
             try:
                 end_dt = dt_util.parse_datetime(end_str)
                 if end_dt is None:
                     continue
-                # slot_end stored as local time with tz
                 if end_dt.tzinfo is None:
                     end_dt = dt_util.as_local(dt_util.as_utc(end_dt))
                 self.booked_slots[end_dt] = BookedSlot(
@@ -74,6 +79,21 @@ class TariffSaverStore:
                     base_chf=float(payload.get("base_chf", 0.0)),
                     status=str(payload.get("status", "ok")),
                 )
+            except Exception:
+                continue
+
+        # ---- price slots (NEW) ----
+        self.price_slots = {}
+        for start_str, payload in data.get("price_slots", {}).items():
+            try:
+                start_dt = dt_util.parse_datetime(start_str)
+                if start_dt is None:
+                    continue
+                start_dt = dt_util.as_utc(start_dt)
+                dyn = payload.get("dyn")
+                base = payload.get("base")
+                if isinstance(dyn, (int, float)) and isinstance(base, (int, float)):
+                    self.price_slots[start_dt] = {"dyn": float(dyn), "base": float(base)}
             except Exception:
                 continue
 
@@ -89,10 +109,19 @@ class TariffSaverStore:
                 }
                 for end, b in self.booked_slots.items()
             },
+            # 🔹 NEW
+            "price_slots": {
+                dt_util.as_utc(start).isoformat(): {
+                    "dyn": p["dyn"],
+                    "base": p["base"],
+                }
+                for start, p in self.price_slots.items()
+            },
         }
         await self._store.async_save(payload)
         self.dirty = False
 
+    # ---------- samples ----------
     def trim_samples(self, keep_hours: int = 48) -> None:
         cutoff = dt_util.utcnow() - timedelta(hours=keep_hours)
         self.samples = [(ts, kwh) for ts, kwh in self.samples if ts >= cutoff]
@@ -111,7 +140,6 @@ class TariffSaverStore:
     def _last_kwh_before(self, t_utc: datetime) -> float | None:
         """Return last kWh sample <= t_utc."""
         t_utc = dt_util.as_utc(t_utc)
-        # samples are appended, so scanning from end is fast
         for ts, kwh in reversed(self.samples):
             if ts <= t_utc:
                 return kwh
@@ -119,7 +147,6 @@ class TariffSaverStore:
 
     def delta_kwh(self, start_local: datetime, end_local: datetime) -> float | None:
         """Compute kWh delta between local times [start, end]."""
-        # convert local -> UTC
         start_utc = dt_util.as_utc(start_local)
         end_utc = dt_util.as_utc(end_local)
 
@@ -129,15 +156,44 @@ class TariffSaverStore:
             return None
         return kwh_end - kwh_start
 
+    # ---------- price slots (NEW) ----------
+    def set_price_slot(self, slot_start_utc: datetime, dyn_chf_per_kwh: float, base_chf_per_kwh: float) -> None:
+        slot_start_utc = dt_util.as_utc(slot_start_utc)
+        self.price_slots[slot_start_utc] = {
+            "dyn": float(dyn_chf_per_kwh),
+            "base": float(base_chf_per_kwh),
+        }
+        self.dirty = True
+
+    def get_price_slot(self, slot_start_utc: datetime) -> dict[str, float] | None:
+        slot_start_utc = dt_util.as_utc(slot_start_utc)
+        return self.price_slots.get(slot_start_utc)
+
+    def trim_price_slots(self, keep_days: int = 3) -> None:
+        """Keep only recent price slots (UTC)."""
+        cutoff = dt_util.utcnow() - timedelta(days=keep_days)
+        self.price_slots = {ts: p for ts, p in self.price_slots.items() if ts >= cutoff}
+
+    # ---------- booked slots ----------
     def is_slot_booked(self, slot_end_local: datetime) -> bool:
         return slot_end_local in self.booked_slots
 
     def book_slot_ok(self, slot_end_local: datetime, kwh: float, dyn_chf: float, base_chf: float) -> None:
-        self.booked_slots[slot_end_local] = BookedSlot(kwh=kwh, dyn_chf=dyn_chf, base_chf=base_chf, status="ok")
+        self.booked_slots[slot_end_local] = BookedSlot(
+            kwh=kwh,
+            dyn_chf=dyn_chf,
+            base_chf=base_chf,
+            status="ok",
+        )
         self.dirty = True
 
     def book_slot_status(self, slot_end_local: datetime, status: str) -> None:
-        self.booked_slots[slot_end_local] = BookedSlot(kwh=0.0, dyn_chf=0.0, base_chf=0.0, status=status)
+        self.booked_slots[slot_end_local] = BookedSlot(
+            kwh=0.0,
+            dyn_chf=0.0,
+            base_chf=0.0,
+            status=status,
+        )
         self.dirty = True
 
     def compute_today_totals(self) -> tuple[float, float, float]:
@@ -150,7 +206,6 @@ class TariffSaverStore:
         for end_local, b in self.booked_slots.items():
             if b.status != "ok":
                 continue
-            # slot_end is end boundary; include those that are today
             if start_local < end_local <= now_local:
                 dyn_total += b.dyn_chf
                 base_total += b.base_chf
