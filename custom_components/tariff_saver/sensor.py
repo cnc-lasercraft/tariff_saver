@@ -628,6 +628,7 @@ class TariffSaverActualCostTodaySensor(_BaseTodayCostSensor):
     _attr_has_entity_name = True
     _attr_name = "Actual cost today"
     _attr_icon = "mdi:cash"
+    _attr_state_class = "total"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
@@ -647,6 +648,7 @@ class TariffSaverBaselineCostTodaySensor(_BaseTodayCostSensor):
     _attr_has_entity_name = True
     _attr_name = "Baseline cost today"
     _attr_icon = "mdi:cash-multiple"
+    _attr_state_class = "total"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
@@ -669,6 +671,7 @@ class TariffSaverActualSavingsTodaySensor(_BaseTodayCostSensor):
     _attr_has_entity_name = True
     _attr_name = "Actual savings today"
     _attr_icon = "mdi:piggy-bank"
+    _attr_state_class = "measurement"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
