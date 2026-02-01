@@ -32,18 +32,15 @@ def _avg(values: list[float]) -> float | None:
 
 
 class TariffSaverCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Fetches and stores tariff price curves + daily derived stats."""
 
     def __init__(
         self,
         hass: HomeAssistant,
         api: EkzTariffApi,
-        entry: ConfigEntry,
         config: dict[str, Any],
     ) -> None:
         self.hass = hass
         self.api = api
-        self.entry = entry
 
         self.tariff_name: str = config["tariff_name"]
         self.baseline_tariff_name: str | None = config.get("baseline_tariff_name")
@@ -51,15 +48,16 @@ class TariffSaverCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._last_fetch_date: date | None = None
 
-        # ✅ Store korrekt an entry gebunden
-        self.store = TariffSaverStore(hass, entry.entry_id)
+        # ✅ Store wird später initialisiert
+        self.store = None
 
         super().__init__(
             hass,
             _LOGGER,
             name="Tariff Saver",
-            update_interval=None,  # daily trigger will call refresh
+            update_interval=None,
         )
+
 
     async def _async_update_data(self) -> dict[str, Any]:
         today = dt_util.now().date()
