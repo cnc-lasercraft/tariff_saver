@@ -1,139 +1,175 @@
-"""Config flow for Tariff Saver."""
+"""Options flow for Tariff Saver."""
 from __future__ import annotations
 
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.const import CONF_NAME
-from homeassistant.core import callback
-
-from .const import (
-    DOMAIN,
-    DEFAULT_PUBLISH_TIME,
-    CONF_PUBLISH_TIME,
-)
-
-# Modes
-MODE_PUBLIC = "public"
-MODE_MYEKZ = "myekz"
+from homeassistant.helpers import selector
 
 
-class TariffSaverConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Tariff Saver."""
+# --- Option keys (kept local for now; we can move to const.py later) ---
+OPT_PRICE_MODE = "price_mode"  # "fetch" | "import"
+OPT_IMPORT_PROVIDER = "import_provider"  # currently only "ekz_api"
+OPT_SOURCE_INTERVAL_MIN = "source_interval_minutes"  # 15 | 60
+OPT_NORMALIZATION_MODE = "normalization_mode"  # "repeat" (60 -> 15)
 
-    VERSION = 2
+OPT_IMPORT_ENTITY_DYN = "import_entity_dyn"  # entity_id
+OPT_BASELINE_MODE = "baseline_mode"  # "fixed" | "entity"
+OPT_BASELINE_VALUE = "baseline_value"  # float (CHF/kWh after scaling)
+OPT_BASELINE_ENTITY = "baseline_entity"  # entity_id
 
-    def __init__(self) -> None:
-        self._name: str | None = None
-        self._mode: str | None = None
+OPT_PRICE_SCALE = "price_scale"  # float multiplier
+OPT_IGNORE_ZERO_PRICES = "ignore_zero_prices"  # bool
 
-    async def async_step_user(self, user_input=None):
-        """Initial step: choose integration name."""
+
+# --- Defaults ---
+DEFAULT_PRICE_MODE = "fetch"
+DEFAULT_IMPORT_PROVIDER = "ekz_api"
+DEFAULT_SOURCE_INTERVAL_MIN = 15
+DEFAULT_NORMALIZATION_MODE = "repeat"
+
+DEFAULT_BASELINE_MODE = "fixed"
+DEFAULT_BASELINE_VALUE = 0.0
+
+DEFAULT_PRICE_SCALE = 1.0
+DEFAULT_IGNORE_ZERO_PRICES = True
+
+
+class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle an options flow for Tariff Saver."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        self._entry = config_entry
+
+    async def async_step_init(self, user_input=None):
+        """Manage options."""
         if user_input is not None:
-            self._name = user_input[CONF_NAME]
-            return await self.async_step_mode()
+            # Persist exactly what user provided (clean minimal)
+            opts: dict = dict(self._entry.options)
+
+            opts[OPT_PRICE_MODE] = user_input[OPT_PRICE_MODE]
+            opts[OPT_IMPORT_PROVIDER] = user_input[OPT_IMPORT_PROVIDER]
+            opts[OPT_SOURCE_INTERVAL_MIN] = int(user_input[OPT_SOURCE_INTERVAL_MIN])
+            opts[OPT_NORMALIZATION_MODE] = user_input[OPT_NORMALIZATION_MODE]
+
+            opts[OPT_IMPORT_ENTITY_DYN] = user_input.get(OPT_IMPORT_ENTITY_DYN)
+
+            opts[OPT_BASELINE_MODE] = user_input[OPT_BASELINE_MODE]
+            opts[OPT_BASELINE_VALUE] = float(user_input.get(OPT_BASELINE_VALUE, 0.0))
+            opts[OPT_BASELINE_ENTITY] = user_input.get(OPT_BASELINE_ENTITY)
+
+            opts[OPT_PRICE_SCALE] = float(user_input.get(OPT_PRICE_SCALE, 1.0))
+            opts[OPT_IGNORE_ZERO_PRICES] = bool(
+                user_input.get(OPT_IGNORE_ZERO_PRICES, True)
+            )
+
+            return self.async_create_entry(title="", data=opts)
+
+        # Existing options / defaults
+        current = dict(self._entry.options)
+
+        price_mode = current.get(OPT_PRICE_MODE, DEFAULT_PRICE_MODE)
+        import_provider = current.get(OPT_IMPORT_PROVIDER, DEFAULT_IMPORT_PROVIDER)
+        source_interval = int(current.get(OPT_SOURCE_INTERVAL_MIN, DEFAULT_SOURCE_INTERVAL_MIN))
+        normalization_mode = current.get(OPT_NORMALIZATION_MODE, DEFAULT_NORMALIZATION_MODE)
+
+        import_entity_dyn = current.get(OPT_IMPORT_ENTITY_DYN)
+
+        baseline_mode = current.get(OPT_BASELINE_MODE, DEFAULT_BASELINE_MODE)
+        baseline_value = float(current.get(OPT_BASELINE_VALUE, DEFAULT_BASELINE_VALUE))
+        baseline_entity = current.get(OPT_BASELINE_ENTITY)
+
+        price_scale = float(current.get(OPT_PRICE_SCALE, DEFAULT_PRICE_SCALE))
+        ignore_zero = bool(current.get(OPT_IGNORE_ZERO_PRICES, DEFAULT_IGNORE_ZERO_PRICES))
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_NAME): str,
-            }
-        )
-
-        return self.async_show_form(
-            step_id="user",
-            data_schema=schema,
-        )
-
-    async def async_step_mode(self, user_input=None):
-        """Choose authentication mode."""
-        if user_input is not None:
-            self._mode = user_input["mode"]
-            if self._mode == MODE_PUBLIC:
-                return await self.async_step_public()
-            return await self.async_step_myekz()
-
-        schema = vol.Schema(
-            {
-                vol.Required("mode", default=MODE_PUBLIC): vol.In(
+                # 1) Price source: built-in fetch vs import entity
+                vol.Required(
+                    OPT_PRICE_MODE,
+                    default=price_mode,
+                ): vol.In(
                     {
-                        MODE_PUBLIC: "Public (no login)",
-                        MODE_MYEKZ: "myEKZ login",
+                        "fetch": "EKZ API (integriert)",
+                        "import": "Import aus Home-Assistant Entität",
                     }
-                )
-            }
-        )
+                ),
 
-        return self.async_show_form(
-            step_id="mode",
-            data_schema=schema,
-        )
+                # Dropdown for "Import Varianten" / provider catalog (currently only EKZ)
+                vol.Required(
+                    OPT_IMPORT_PROVIDER,
+                    default=import_provider,
+                ): vol.In(
+                    {
+                        "ekz_api": "EKZ API",
+                    }
+                ),
 
-    async def async_step_public(self, user_input=None):
-        """Public (no-login) configuration."""
-        if user_input is not None:
-            return self.async_create_entry(
-                title=self._name,
-                data={
-                    CONF_NAME: self._name,
-                    "mode": MODE_PUBLIC,
-                    "tariff_name": user_input["tariff_name"],
-                    "baseline_tariff_name": user_input.get("baseline_tariff_name"),
-                    CONF_PUBLISH_TIME: user_input.get(
-                        CONF_PUBLISH_TIME, DEFAULT_PUBLISH_TIME
-                    ),
-                },
-            )
+                # 2) Source interval (what the upstream tariff changes in)
+                vol.Required(
+                    OPT_SOURCE_INTERVAL_MIN,
+                    default=source_interval,
+                ): vol.In(
+                    {
+                        15: "15 Minuten",
+                        60: "60 Minuten (Stundenpreise)",
+                    }
+                ),
 
-        schema = vol.Schema(
-            {
-                vol.Required("tariff_name"): str,
-                vol.Optional("baseline_tariff_name", default="electricity_standard"): str,
+                # Normalization to our internal 15-min slots (keep future-proof)
+                vol.Required(
+                    OPT_NORMALIZATION_MODE,
+                    default=normalization_mode,
+                ): vol.In(
+                    {
+                        "repeat": "Stundenpreis auf 4×15min replizieren",
+                    }
+                ),
+
+                # 3) Import entity (dynamic price)
                 vol.Optional(
-                    CONF_PUBLISH_TIME,
-                    default=DEFAULT_PUBLISH_TIME,
-                ): str,  # HH:MM
-            }
-        )
+                    OPT_IMPORT_ENTITY_DYN,
+                    default=import_entity_dyn,
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor",
+                    )
+                ),
 
-        return self.async_show_form(
-            step_id="public",
-            data_schema=schema,
-        )
-
-    async def async_step_myekz(self, user_input=None):
-        """Placeholder for myEKZ OAuth flow."""
-        # OAuth / credentials flow lives elsewhere (oauth2.py)
-        # For now we keep this minimal and future-proof.
-        if user_input is not None:
-            return self.async_create_entry(
-                title=self._name,
-                data={
-                    CONF_NAME: self._name,
-                    "mode": MODE_MYEKZ,
-                    CONF_PUBLISH_TIME: user_input.get(
-                        CONF_PUBLISH_TIME, DEFAULT_PUBLISH_TIME
-                    ),
-                },
-            )
-
-        schema = vol.Schema(
-            {
+                # 4) Baseline configuration (for real savings)
+                vol.Required(
+                    OPT_BASELINE_MODE,
+                    default=baseline_mode,
+                ): vol.In(
+                    {
+                        "fixed": "Baseline: fixer Wert",
+                        "entity": "Baseline: Home-Assistant Entität",
+                    }
+                ),
                 vol.Optional(
-                    CONF_PUBLISH_TIME,
-                    default=DEFAULT_PUBLISH_TIME,
-                ): str,
+                    OPT_BASELINE_VALUE,
+                    default=baseline_value,
+                ): vol.Coerce(float),
+                vol.Optional(
+                    OPT_BASELINE_ENTITY,
+                    default=baseline_entity,
+                ): selector.EntitySelector(
+                    selector.EntitySelectorConfig(
+                        domain="sensor",
+                    )
+                ),
+
+                # 5) Scale (Rp/kWh, ct/kWh, CHF/MWh, ...)
+                vol.Required(
+                    OPT_PRICE_SCALE,
+                    default=price_scale,
+                ): vol.Coerce(float),
+
+                vol.Required(
+                    OPT_IGNORE_ZERO_PRICES,
+                    default=ignore_zero,
+                ): bool,
             }
         )
 
-        return self.async_show_form(
-            step_id="myekz",
-            data_schema=schema,
-        )
-
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry):
-        """Return the options flow handler."""
-        from .options_flow import TariffSaverOptionsFlowHandler
-        return TariffSaverOptionsFlowHandler(config_entry)
-
+        return self.async_show_form(step_id="init", data_schema=schema)
