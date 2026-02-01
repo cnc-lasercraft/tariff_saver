@@ -1,105 +1,176 @@
 """Options flow for Tariff Saver."""
 from __future__ import annotations
 
-from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.helpers import selector
 
-from .const import (
-    CONF_PUBLISH_TIME,
-    DEFAULT_PUBLISH_TIME,
-    CONF_CONSUMPTION_ENERGY_ENTITY,
-    CONF_ENABLE_COST_TRACKING,
-    DEFAULT_ENABLE_COST_TRACKING,
-    CONF_GRADE_T1,
-    CONF_GRADE_T2,
-    CONF_GRADE_T3,
-    CONF_GRADE_T4,
-    DEFAULT_GRADE_T1,
-    DEFAULT_GRADE_T2,
-    DEFAULT_GRADE_T3,
-    DEFAULT_GRADE_T4,
-)
+
+# --- Option keys (kept local for now; we can move to const.py later) ---
+OPT_PRICE_MODE = "price_mode"  # "fetch" | "import"
+OPT_IMPORT_PROVIDER = "import_provider"  # currently only "ekz_api"
+OPT_SOURCE_INTERVAL_MIN = "source_interval_minutes"  # 15 | 60
+OPT_NORMALIZATION_MODE = "normalization_mode"  # "repeat" (60 -> 15)
+
+OPT_IMPORT_ENTITY_DYN = "import_entity_dyn"  # entity_id
+OPT_BASELINE_MODE = "baseline_mode"  # "fixed" | "entity"
+OPT_BASELINE_VALUE = "baseline_value"  # float (CHF/kWh after scaling)
+OPT_BASELINE_ENTITY = "baseline_entity"  # entity_id
+
+OPT_PRICE_SCALE = "price_scale"  # float multiplier
+OPT_IGNORE_ZERO_PRICES = "ignore_zero_prices"  # bool
 
 
-def _parse_hhmm(value: str) -> str:
-    """Validate HH:MM."""
-    try:
-        hh, mm = value.strip().split(":")
-        h = int(hh)
-        m = int(mm)
-        if 0 <= h <= 23 and 0 <= m <= 59:
-            return f"{h:02d}:{m:02d}"
-    except Exception as err:  # noqa: BLE001
-        raise vol.Invalid("Time must be HH:MM") from err
-    raise vol.Invalid("Time must be HH:MM")
+# --- Defaults ---
+DEFAULT_PRICE_MODE = "fetch"
+DEFAULT_IMPORT_PROVIDER = "ekz_api"
+DEFAULT_SOURCE_INTERVAL_MIN = 15
+DEFAULT_NORMALIZATION_MODE = "repeat"
+
+DEFAULT_BASELINE_MODE = "fixed"
+DEFAULT_BASELINE_VALUE = 0.0
+
+DEFAULT_PRICE_SCALE = 1.0
+DEFAULT_IGNORE_ZERO_PRICES = True
+
+
+def _sensor_entity_selector() -> selector.EntitySelector:
+    """Entity selector limited to sensor domain (HA 2026.x compatible)."""
+    return selector.EntitySelector(
+        selector.EntitySelectorConfig(
+            filter=selector.EntityFilterSelectorConfig(domain=["sensor"])
+        )
+    )
 
 
 class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle options for Tariff Saver.
-
-    IMPORTANT:
-    - HA calls TariffSaverOptionsFlowHandler(config_entry)
-    - Do NOT assign self.config_entry (read-only property in your HA)
-    - Store entry on our own attribute.
-    """
+    """Handle an options flow for Tariff Saver."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        # Do not call super().__init__(config_entry) because in your HA it may take no args.
-        # Do not set self.config_entry (read-only).
-        self._ts_entry = config_entry
+        self._entry = config_entry
 
-    async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        errors: dict[str, str] = {}
-
+    async def async_step_init(self, user_input=None):
+        """Manage options."""
         if user_input is not None:
-            # Validate publish_time
-            try:
-                user_input[CONF_PUBLISH_TIME] = _parse_hhmm(user_input[CONF_PUBLISH_TIME])
-            except vol.Invalid:
-                errors[CONF_PUBLISH_TIME] = "invalid_time"
+            # Persist exactly what user provided (clean minimal)
+            opts: dict = dict(self._entry.options)
 
-            # Validate threshold ordering
-            try:
-                t1 = float(user_input[CONF_GRADE_T1])
-                t2 = float(user_input[CONF_GRADE_T2])
-                t3 = float(user_input[CONF_GRADE_T3])
-                t4 = float(user_input[CONF_GRADE_T4])
-                if not (t1 <= t2 <= t3 <= t4):
-                    errors[CONF_GRADE_T4] = "threshold_order"
-            except Exception:  # noqa: BLE001
-                errors[CONF_GRADE_T4] = "threshold_invalid"
+            opts[OPT_PRICE_MODE] = user_input[OPT_PRICE_MODE]
+            opts[OPT_IMPORT_PROVIDER] = user_input[OPT_IMPORT_PROVIDER]
+            opts[OPT_SOURCE_INTERVAL_MIN] = int(user_input[OPT_SOURCE_INTERVAL_MIN])
+            opts[OPT_NORMALIZATION_MODE] = user_input[OPT_NORMALIZATION_MODE]
 
-            if not errors:
-                return self.async_create_entry(title="", data=user_input)
+            opts[OPT_IMPORT_ENTITY_DYN] = user_input.get(OPT_IMPORT_ENTITY_DYN)
 
-        opt = dict(self._ts_entry.options)
-        dat = dict(self._ts_entry.data)
+            opts[OPT_BASELINE_MODE] = user_input[OPT_BASELINE_MODE]
+            opts[OPT_BASELINE_VALUE] = float(user_input.get(OPT_BASELINE_VALUE, 0.0))
+            opts[OPT_BASELINE_ENTITY] = user_input.get(OPT_BASELINE_ENTITY)
+
+            opts[OPT_PRICE_SCALE] = float(user_input.get(OPT_PRICE_SCALE, 1.0))
+            opts[OPT_IGNORE_ZERO_PRICES] = bool(
+                user_input.get(OPT_IGNORE_ZERO_PRICES, True)
+            )
+
+            return self.async_create_entry(title="", data=opts)
+
+        # Existing options / defaults
+        current = dict(self._entry.options)
+
+        price_mode = current.get(OPT_PRICE_MODE, DEFAULT_PRICE_MODE)
+        import_provider = current.get(OPT_IMPORT_PROVIDER, DEFAULT_IMPORT_PROVIDER)
+        source_interval = int(current.get(OPT_SOURCE_INTERVAL_MIN, DEFAULT_SOURCE_INTERVAL_MIN))
+        normalization_mode = current.get(OPT_NORMALIZATION_MODE, DEFAULT_NORMALIZATION_MODE)
+
+        import_entity_dyn = current.get(OPT_IMPORT_ENTITY_DYN)
+
+        baseline_mode = current.get(OPT_BASELINE_MODE, DEFAULT_BASELINE_MODE)
+        baseline_value = float(current.get(OPT_BASELINE_VALUE, DEFAULT_BASELINE_VALUE))
+        baseline_entity = current.get(OPT_BASELINE_ENTITY)
+
+        price_scale = float(current.get(OPT_PRICE_SCALE, DEFAULT_PRICE_SCALE))
+        ignore_zero = bool(current.get(OPT_IGNORE_ZERO_PRICES, DEFAULT_IGNORE_ZERO_PRICES))
 
         schema = vol.Schema(
             {
+                # 1) Price source: built-in fetch vs import entity
                 vol.Required(
-                    CONF_PUBLISH_TIME,
-                    default=opt.get(CONF_PUBLISH_TIME, dat.get(CONF_PUBLISH_TIME, DEFAULT_PUBLISH_TIME)),
-                ): str,
+                    OPT_PRICE_MODE,
+                    default=price_mode,
+                ): vol.In(
+                    {
+                        "fetch": "EKZ API (integriert)",
+                        "import": "Import aus Home-Assistant Entität",
+                    }
+                ),
 
-                vol.Optional(
-                    CONF_CONSUMPTION_ENERGY_ENTITY,
-                    default=opt.get(CONF_CONSUMPTION_ENERGY_ENTITY, ""),
-                ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+                # Dropdown for provider catalog (currently only EKZ)
+                vol.Required(
+                    OPT_IMPORT_PROVIDER,
+                    default=import_provider,
+                ): vol.In(
+                    {
+                        "ekz_api": "EKZ API",
+                    }
+                ),
 
+                # 2) Source interval (what the upstream tariff changes in)
+                vol.Required(
+                    OPT_SOURCE_INTERVAL_MIN,
+                    default=source_interval,
+                ): vol.In(
+                    {
+                        15: "15 Minuten",
+                        60: "60 Minuten (Stundenpreise)",
+                    }
+                ),
+
+                # Normalization to our internal 15-min slots
+                vol.Required(
+                    OPT_NORMALIZATION_MODE,
+                    default=normalization_mode,
+                ): vol.In(
+                    {
+                        "repeat": "Stundenpreis auf 4×15min replizieren",
+                    }
+                ),
+
+                # 3) Import entity (dynamic price)
                 vol.Optional(
-                    CONF_ENABLE_COST_TRACKING,
-                    default=opt.get(CONF_ENABLE_COST_TRACKING, DEFAULT_ENABLE_COST_TRACKING),
+                    OPT_IMPORT_ENTITY_DYN,
+                    default=import_entity_dyn,
+                ): _sensor_entity_selector(),
+
+                # 4) Baseline configuration (for real savings)
+                vol.Required(
+                    OPT_BASELINE_MODE,
+                    default=baseline_mode,
+                ): vol.In(
+                    {
+                        "fixed": "Baseline: fixer Wert",
+                        "entity": "Baseline: Home-Assistant Entität",
+                    }
+                ),
+                vol.Optional(
+                    OPT_BASELINE_VALUE,
+                    default=baseline_value,
+                ): vol.Coerce(float),
+                vol.Optional(
+                    OPT_BASELINE_ENTITY,
+                    default=baseline_entity,
+                ): _sensor_entity_selector(),
+
+                # 5) Scale (Rp/kWh, ct/kWh, CHF/MWh, ...)
+                vol.Required(
+                    OPT_PRICE_SCALE,
+                    default=price_scale,
+                ): vol.Coerce(float),
+
+                vol.Required(
+                    OPT_IGNORE_ZERO_PRICES,
+                    default=ignore_zero,
                 ): bool,
-
-                vol.Required(CONF_GRADE_T1, default=opt.get(CONF_GRADE_T1, DEFAULT_GRADE_T1)): vol.Coerce(float),
-                vol.Required(CONF_GRADE_T2, default=opt.get(CONF_GRADE_T2, DEFAULT_GRADE_T2)): vol.Coerce(float),
-                vol.Required(CONF_GRADE_T3, default=opt.get(CONF_GRADE_T3, DEFAULT_GRADE_T3)): vol.Coerce(float),
-                vol.Required(CONF_GRADE_T4, default=opt.get(CONF_GRADE_T4, DEFAULT_GRADE_T4)): vol.Coerce(float),
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+        return self.async_show_form(step_id="init", data_schema=schema)
