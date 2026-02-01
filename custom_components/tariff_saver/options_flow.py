@@ -5,7 +5,6 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
@@ -39,22 +38,30 @@ def _parse_hhmm(value: str) -> str:
 
 
 class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle Tariff Saver options."""
+    """Handle options for Tariff Saver."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """HA will pass config_entry here."""
-        self.config_entry = config_entry
-        self._errors: dict[str, str] = {}
+    def _entry(self) -> config_entries.ConfigEntry:
+        """Return config entry across HA versions."""
+        # Some HA versions expose read-only property .config_entry
+        ce = getattr(self, "config_entry", None)
+        if ce is not None:
+            return ce
+        # Other versions keep it private
+        ce = getattr(self, "_config_entry", None)
+        if ce is not None:
+            return ce
+        raise RuntimeError("Config entry not available in OptionsFlow")
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        if user_input is not None:
-            self._errors = {}
+        errors: dict[str, str] = {}
+        entry = self._entry()
 
+        if user_input is not None:
             # Validate publish_time
             try:
                 user_input[CONF_PUBLISH_TIME] = _parse_hhmm(user_input[CONF_PUBLISH_TIME])
             except vol.Invalid:
-                self._errors[CONF_PUBLISH_TIME] = "invalid_time"
+                errors[CONF_PUBLISH_TIME] = "invalid_time"
 
             # Validate threshold ordering
             try:
@@ -63,15 +70,15 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
                 t3 = float(user_input[CONF_GRADE_T3])
                 t4 = float(user_input[CONF_GRADE_T4])
                 if not (t1 <= t2 <= t3 <= t4):
-                    self._errors[CONF_GRADE_T4] = "threshold_order"
+                    errors[CONF_GRADE_T4] = "threshold_order"
             except Exception:  # noqa: BLE001
-                self._errors[CONF_GRADE_T4] = "threshold_invalid"
+                errors[CONF_GRADE_T4] = "threshold_invalid"
 
-            if not self._errors:
+            if not errors:
                 return self.async_create_entry(title="", data=user_input)
 
-        opt = dict(self.config_entry.options)
-        dat = dict(self.config_entry.data)
+        opt = dict(entry.options)
+        dat = dict(entry.data)
 
         schema = vol.Schema(
             {
@@ -97,4 +104,4 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema, errors=self._errors)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
