@@ -28,15 +28,22 @@ class EkzTariffApi:
     async def fetch_prices(
         self,
         tariff_name: str,
-        start: datetime,
-        end: datetime,
+        start: datetime | None = None,
+        end: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch raw price items (entries from `prices`)."""
-        params = {
+        """Fetch raw price items (entries from `prices`).
+
+        If start/end are omitted, the API returns tariffs of the current date
+        (00:00–24:00 local), per EKZ API documentation.
+        """
+        params: dict[str, Any] = {
             "tariff_name": tariff_name,
-            "start_timestamp": start.isoformat(),
-            "end_timestamp": end.isoformat(),
         }
+
+        if start is not None and end is not None:
+            params["start_timestamp"] = start.isoformat()
+            params["end_timestamp"] = end.isoformat()
+
         url = f"{self.BASE_URL}/tariffs"
 
         _LOGGER.debug("Fetching EKZ tariffs: %s", params)
@@ -51,7 +58,9 @@ class EkzTariffApi:
 
         prices = payload.get("prices")
         if not isinstance(prices, list):
-            raise ValueError(f"Unexpected EKZ payload shape, missing 'prices': {payload!r}")
+            raise ValueError(
+                f"Unexpected EKZ payload shape, missing 'prices': {payload!r}"
+            )
 
         return prices
 
@@ -91,8 +100,6 @@ class EkzTariffApi:
         """
         total = 0.0
         for _key, val in price_item.items():
-            # Most component fields appear to be lists of objects like:
-            # [{"unit": "CHF_kWh", "value": 0.1234}, ...]
             if isinstance(val, list):
                 for entry in val:
                     if isinstance(entry, dict) and entry.get("unit") == "CHF_kWh":
