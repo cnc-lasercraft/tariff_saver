@@ -5,13 +5,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, date
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback, Event
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
@@ -135,7 +136,7 @@ async def async_setup_entry(
     """Set up sensors from a config entry."""
     coordinator: TariffSaverCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # Track energy samples -> finalize 15-min slots -> persist -> update cost sensors
+    # Track energy samples -> finalize 15-min slots -> persistpersist -> update cost sensors
     energy_entity = entry.options.get(CONF_CONSUMPTION_ENERGY_ENTITY) or entry.data.get(CONF_CONSUMPTION_ENERGY_ENTITY)
     if isinstance(energy_entity, str) and energy_entity:
 
@@ -206,6 +207,9 @@ async def async_setup_entry(
             TariffSaverActualCostTodaySensor(coordinator, entry),
             TariffSaverBaselineCostTodaySensor(coordinator, entry),
             TariffSaverActualSavingsTodaySensor(coordinator, entry),
+
+            # diagnostics
+            TariffSaverLastApiSuccessSensor(coordinator, entry),
         ],
         update_before_add=True,
     )
@@ -621,3 +625,30 @@ class TariffSaverActualSavingsTodaySensor(_BaseTodayCostSensor):
             return None
         _dyn, _base, sav = t
         return round(sav, 2)
+
+
+# -------------------------------------------------------------------
+# Diagnostics
+# -------------------------------------------------------------------
+class TariffSaverLastApiSuccessSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
+    """Timestamp of the last successful API data fetch (persistent)."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Last API success"
+    _attr_icon = "mdi:cloud-check-outline"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_last_api_success"
+
+    @property
+    def native_value(self) -> datetime | None:
+        store = getattr(self.coordinator, "store", None)
+        if store is None:
+            return None
+        ts = getattr(store, "last_api_success_utc", None)
+        if isinstance(ts, datetime):
+            return dt_util.as_utc(ts)
+        return None
