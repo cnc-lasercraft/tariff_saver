@@ -7,7 +7,7 @@ from homeassistant import config_entries
 from homeassistant.helpers import selector
 
 
-# --- Option keys (kept local for now; we can move to const.py later) ---
+# --- Option keys (kept local for now; can be moved to const.py later) ---
 OPT_PRICE_MODE = "price_mode"  # "fetch" | "import"
 OPT_IMPORT_PROVIDER = "import_provider"  # future-proof; currently only "ekz_api"
 OPT_SOURCE_INTERVAL_MIN = "source_interval_minutes"  # 15 | 60
@@ -27,10 +27,10 @@ OPT_PUBLISH_TIME = "publish_time"  # HH:MM (local time)
 OPT_PRICE_SCALE = "price_scale"  # multiplier applied to source values to get CHF/kWh
 OPT_IGNORE_ZERO_PRICES = "ignore_zero_prices"
 
-# PV / Solar (new)
+# PV / Solar
 OPT_SOLAR_INSTALLED = "solar_installed"
 OPT_USE_SOLCAST = "use_solcast"
-OPT_SOLAR_COST_RP_KWH = "solar_cost_rp_per_kwh"  # numeric input (Rp/kWh)
+OPT_SOLAR_COST_RP_KWH = "solar_cost_rp_per_kwh"  # Rp/kWh (float)
 
 
 def _sensor_entity_selector() -> selector.EntitySelector:
@@ -44,16 +44,22 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self._entry = config_entry
+        self._pending: dict[str, object] = {}
 
     async def async_step_init(self, user_input=None):
-        """Manage options."""
+        """Main options form (without conditional Solar fields)."""
         if user_input is not None:
-            # If solar not installed, force-disable Solcast
-            solar_installed = bool(user_input.get(OPT_SOLAR_INSTALLED, False))
-            if not solar_installed:
-                user_input[OPT_USE_SOLCAST] = False
+            # Keep user's choices so far
+            self._pending = dict(user_input)
 
-            return self.async_create_entry(title="", data=user_input)
+            solar_installed = bool(user_input.get(OPT_SOLAR_INSTALLED, False))
+            if solar_installed:
+                return await self.async_step_solar()
+
+            # If no solar installed -> force-disable solcast + zero solar cost
+            self._pending[OPT_USE_SOLCAST] = False
+            self._pending[OPT_SOLAR_COST_RP_KWH] = 0.0
+            return self.async_create_entry(title="", data=self._pending)
 
         # ---- defaults (existing -> fallback) ----
         opts = dict(self._entry.options)
@@ -72,23 +78,20 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
         baseline_fixed = float(opts.get(OPT_BASELINE_FIXED_RP_KWH, 0.0))
         baseline_entity = opts.get(OPT_BASELINE_ENTITY, "")
 
-        consumption_entity = opts.get(OPT_CONSUMPTION_ENERGY_ENTITY, data.get(OPT_CONSUMPTION_ENERGY_ENTITY, ""))
+        consumption_entity = opts.get(
+            OPT_CONSUMPTION_ENERGY_ENTITY,
+            data.get(OPT_CONSUMPTION_ENERGY_ENTITY, ""),
+        )
         publish_time = opts.get(OPT_PUBLISH_TIME, data.get(OPT_PUBLISH_TIME, "18:15"))
 
         price_scale = float(opts.get(OPT_PRICE_SCALE, 1.0))
         ignore_zero = bool(opts.get(OPT_IGNORE_ZERO_PRICES, True))
 
         solar_installed = bool(opts.get(OPT_SOLAR_INSTALLED, False))
-        use_solcast = bool(opts.get(OPT_USE_SOLCAST, False))
-        solar_cost_rp = float(opts.get(OPT_SOLAR_COST_RP_KWH, 0.0))
 
-        # ---- schema base ----
         schema_dict: dict[vol.Marker, object] = {
             # 1) Price source
-            vol.Required(
-                OPT_PRICE_MODE,
-                default=price_mode,
-            ): vol.In(
+            vol.Required(OPT_PRICE_MODE, default=price_mode): vol.In(
                 {
                     "fetch": "EKZ API",
                     "import": "Import from existing entities",
@@ -96,18 +99,12 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
             ),
         }
 
-        # Price mode details
+        # Price mode details (based on current stored setting)
         if price_mode == "import":
             schema_dict.update(
                 {
-                    vol.Required(
-                        OPT_IMPORT_ENTITY_DYN,
-                        default=import_entity_dyn,
-                    ): _sensor_entity_selector(),
-                    vol.Optional(
-                        OPT_IMPORT_PROVIDER,
-                        default=import_provider,
-                    ): vol.In(
+                    vol.Required(OPT_IMPORT_ENTITY_DYN, default=import_entity_dyn): _sensor_entity_selector(),
+                    vol.Optional(OPT_IMPORT_PROVIDER, default=import_provider): vol.In(
                         {
                             "ekz_api": "EKZ API (placeholder)",
                         }
@@ -115,13 +112,9 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
                 }
             )
         else:
-            # fetch-mode: provider placeholder (future-proof)
             schema_dict.update(
                 {
-                    vol.Optional(
-                        OPT_IMPORT_PROVIDER,
-                        default=import_provider,
-                    ): vol.In(
+                    vol.Optional(OPT_IMPORT_PROVIDER, default=import_provider): vol.In(
                         {
                             "ekz_api": "EKZ API",
                         }
@@ -132,17 +125,11 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
         # 2) Source interval & normalization
         schema_dict.update(
             {
-                vol.Required(
-                    OPT_SOURCE_INTERVAL_MIN,
-                    default=source_interval,
-                ): vol.In({15: "15 minutes", 60: "60 minutes"}),
-                vol.Required(
-                    OPT_NORMALIZATION_MODE,
-                    default=normalization,
-                ): vol.In(
-                    {
-                        "repeat": "Repeat (60→15)",
-                    }
+                vol.Required(OPT_SOURCE_INTERVAL_MIN, default=source_interval): vol.In(
+                    {15: "15 minutes", 60: "60 minutes"}
+                ),
+                vol.Required(OPT_NORMALIZATION_MODE, default=normalization): vol.In(
+                    {"repeat": "Repeat (60→15)"}
                 ),
             }
         )
@@ -150,10 +137,7 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
         # 3) Baseline
         schema_dict.update(
             {
-                vol.Required(
-                    OPT_BASELINE_MODE,
-                    default=baseline_mode,
-                ): vol.In(
+                vol.Required(OPT_BASELINE_MODE, default=baseline_mode): vol.In(
                     {
                         "api": "From API / source",
                         "entity": "From entity",
@@ -167,82 +151,69 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
         if baseline_mode == "entity":
             schema_dict.update(
                 {
-                    vol.Required(
-                        OPT_BASELINE_ENTITY,
-                        default=baseline_entity,
-                    ): _sensor_entity_selector()
+                    vol.Required(OPT_BASELINE_ENTITY, default=baseline_entity): _sensor_entity_selector(),
                 }
             )
         elif baseline_mode == "fixed":
             schema_dict.update(
                 {
-                    vol.Required(
-                        OPT_BASELINE_FIXED_RP_KWH,
-                        default=baseline_fixed,
-                    ): vol.Coerce(float)
+                    vol.Required(OPT_BASELINE_FIXED_RP_KWH, default=baseline_fixed): vol.Coerce(float),
                 }
             )
         elif baseline_mode == "api":
-            # Optional baseline import entity (only used when price_mode==import or later providers)
             schema_dict.update(
                 {
-                    vol.Optional(
-                        OPT_IMPORT_ENTITY_BASE,
-                        default=import_entity_base,
-                    ): _sensor_entity_selector()
+                    vol.Optional(OPT_IMPORT_ENTITY_BASE, default=import_entity_base): _sensor_entity_selector(),
                 }
             )
 
         # 4) Consumption / publish time
         schema_dict.update(
             {
-                vol.Optional(
-                    OPT_CONSUMPTION_ENERGY_ENTITY,
-                    default=consumption_entity,
-                ): _sensor_entity_selector(),
-                vol.Optional(
-                    OPT_PUBLISH_TIME,
-                    default=publish_time,
-                ): str,
+                vol.Optional(OPT_CONSUMPTION_ENERGY_ENTITY, default=consumption_entity): _sensor_entity_selector(),
+                vol.Optional(OPT_PUBLISH_TIME, default=publish_time): str,
             }
         )
 
         # 5) Scaling / data hygiene
         schema_dict.update(
             {
-                vol.Required(
-                    OPT_PRICE_SCALE,
-                    default=price_scale,
-                ): vol.Coerce(float),
-                vol.Required(
-                    OPT_IGNORE_ZERO_PRICES,
-                    default=ignore_zero,
-                ): bool,
+                vol.Required(OPT_PRICE_SCALE, default=price_scale): vol.Coerce(float),
+                vol.Required(OPT_IGNORE_ZERO_PRICES, default=ignore_zero): bool,
             }
         )
 
-        # 6) Solar / Solcast (new)
+        # 6) Solar installed toggle (only toggle here; details in next step)
         schema_dict.update(
             {
-                vol.Required(
-                    OPT_SOLAR_INSTALLED,
-                    default=solar_installed,
-                ): bool,
+                vol.Required(OPT_SOLAR_INSTALLED, default=solar_installed): bool,
             }
         )
 
-        if solar_installed:
-            schema_dict.update(
-                {
-                    vol.Required(
-                        OPT_USE_SOLCAST,
-                        default=use_solcast,
-                    ): bool,
-                    vol.Required(
-                        OPT_SOLAR_COST_RP_KWH,
-                        default=solar_cost_rp,
-                    ): vol.Coerce(float),
-                }
-            )
-
         return self.async_show_form(step_id="init", data_schema=vol.Schema(schema_dict))
+
+    async def async_step_solar(self, user_input=None):
+        """Solar details (only shown when Solar installed is enabled)."""
+        if user_input is not None:
+            self._pending.update(user_input)
+
+            # If user disables Solcast, keep solar cost anyway (still useful for later)
+            use_solcast = bool(self._pending.get(OPT_USE_SOLCAST, False))
+            if not use_solcast:
+                # nothing special, just keep cost
+                pass
+
+            return self.async_create_entry(title="", data=self._pending)
+
+        opts = dict(self._entry.options)
+        use_solcast = bool(opts.get(OPT_USE_SOLCAST, False))
+        solar_cost_rp = float(opts.get(OPT_SOLAR_COST_RP_KWH, 0.0))
+
+        schema = vol.Schema(
+            {
+                vol.Required(OPT_USE_SOLCAST, default=use_solcast): bool,
+                vol.Required(OPT_SOLAR_COST_RP_KWH, default=solar_cost_rp): vol.Coerce(float),
+            }
+        )
+
+        return self.async_show_form(step_id="solar", data_schema=schema)
