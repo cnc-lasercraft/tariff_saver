@@ -117,8 +117,6 @@ class TariffSaverCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self.store.set_price_slot(start_utc, dyn_price, base_price)
 
             self.store.trim_price_slots(keep_days=3)
-
-            # IMPORTANT: also saves last_api_success_utc even when baseline is missing
             if self.store.dirty:
                 await self.store.async_save()
 
