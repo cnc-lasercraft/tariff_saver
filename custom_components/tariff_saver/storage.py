@@ -22,7 +22,7 @@ class BookedSlot:
 class TariffSaverStore:
     """Persists recent energy samples, price slots and finalized 15-min slots."""
 
-    STORAGE_VERSION = 2  # bumped due to schema extension
+    STORAGE_VERSION = 3  # bumped due to schema extension: last_api_success_utc
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
         self.hass = hass
@@ -42,6 +42,9 @@ class TariffSaverStore:
         # val: {"dyn": float, "base": float}
         self.price_slots: dict[datetime, dict[str, float]] = {}
 
+        # NEW: last successful API fetch timestamp (UTC)
+        self.last_api_success_utc: datetime | None = None
+
         # runtime flags
         self.dirty: bool = False
         self.last_sample_ts: datetime | None = None
@@ -50,6 +53,17 @@ class TariffSaverStore:
         data = await self._store.async_load()
         if not data:
             return
+
+        # ---- last api success ----
+        self.last_api_success_utc = None
+        try:
+            ts_str = data.get("last_api_success_utc")
+            if isinstance(ts_str, str) and ts_str:
+                ts = dt_util.parse_datetime(ts_str)
+                if ts is not None:
+                    self.last_api_success_utc = dt_util.as_utc(ts)
+        except Exception:
+            self.last_api_success_utc = None
 
         # ---- samples ----
         self.samples = []
@@ -101,6 +115,7 @@ class TariffSaverStore:
 
     async def async_save(self) -> None:
         payload: dict[str, Any] = {
+            "last_api_success_utc": self.last_api_success_utc.isoformat() if self.last_api_success_utc else None,
             "samples": [[dt_util.as_utc(ts).isoformat(), kwh] for ts, kwh in self.samples],
             "booked_slots": {
                 end.isoformat(): {
@@ -121,6 +136,12 @@ class TariffSaverStore:
         }
         await self._store.async_save(payload)
         self.dirty = False
+
+    # ---------- api success ----------
+    def set_last_api_success(self, ts_utc: datetime) -> None:
+        """Set timestamp of last successful API fetch (UTC)."""
+        self.last_api_success_utc = dt_util.as_utc(ts_utc)
+        self.dirty = True
 
     # ---------- samples ----------
     def trim_samples(self, keep_hours: int = 48) -> None:
