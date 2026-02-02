@@ -137,7 +137,7 @@ class TariffSaverOptionsFlowHandler(config_entries.OptionsFlow):
 
         schema: dict[vol.Marker, object] = {
             vol.Required(OPT_PRICE_MODE, default=price_mode): vol.In(
-                {"fetch": "From API", "import": "Import from existing entities"}
+                {"fetch": "From API123", "import": "Import from existing entities"}
             ),
             vol.Optional(OPT_IMPORT_PROVIDER, default=d(OPT_IMPORT_PROVIDER, "ekz_api")): vol.In(
                 {"ekz_api": "EKZ API"}
