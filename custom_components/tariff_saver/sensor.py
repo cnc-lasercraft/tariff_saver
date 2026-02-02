@@ -136,7 +136,7 @@ async def async_setup_entry(
     """Set up sensors from a config entry."""
     coordinator: TariffSaverCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # Track energy samples -> finalize 15-min slots -> persistpersist -> update cost sensors
+    # Track energy samples -> finalize 15-min slots -> persist -> update cost sensors
     energy_entity = entry.options.get(CONF_CONSUMPTION_ENERGY_ENTITY) or entry.data.get(CONF_CONSUMPTION_ENERGY_ENTITY)
     if isinstance(energy_entity, str) and energy_entity:
 
@@ -184,7 +184,6 @@ async def async_setup_entry(
                             blocking=False,
                         )
                     )
-
 
         unsub = async_track_state_change_event(hass, [energy_entity], _on_energy_change)
         hass.data[DOMAIN][f"{entry.entry_id}_unsub_energy_cost"] = unsub
