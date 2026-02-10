@@ -28,3 +28,13 @@ DEFAULT_GRADE_T4 = 25.0
 # Toggles
 CONF_ENABLE_COST_TRACKING = "enable_cost_tracking"
 DEFAULT_ENABLE_COST_TRACKING = True
+
+# Modes
+CONF_MODE = "mode"
+MODE_PUBLIC = "public"
+MODE_MYEKZ = "myekz"
+
+# myEKZ linking / protected endpoints
+CONF_EMS_INSTANCE_ID = "ems_instance_id"
+CONF_REDIRECT_URI = "redirect_uri"
+
