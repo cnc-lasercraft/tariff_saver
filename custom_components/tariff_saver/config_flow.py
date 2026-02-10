@@ -1,18 +1,12 @@
 """Config flow for Tariff Saver (Public + myEKZ OAuth2).
 
-Fix for HA versions where AbstractOAuth2FlowHandler requires choosing an
-implementation before starting auth:
+Fix for HA versions where AbstractOAuth2FlowHandler requires the class attribute
+DOMAIN (uppercase) to be set (not just the decorator argument).
 
-- Start OAuth with: await self.async_step_pick_implementation()
-  (this sets self.flow_impl), then HA continues to async_step_auth.
-
-This matches the HA OAuth2 helper design.
-
-Behavior:
-- Public mode: creates entry immediately.
-- myEKZ mode: asks for redirect_uri + publish_time, generates ems_instance_id,
-  then starts OAuth2 and only after success creates the entry via
-  async_step_auth_create_entry().
+Also:
+- myEKZ: collects redirect_uri + publish_time, generates ems_instance_id,
+  then starts OAuth2 via async_step_pick_implementation().
+- After OAuth success: async_step_auth_create_entry creates the entry.
 
 IMPORTANT:
 - Requires oauth2.py + application_credentials.py to exist.
@@ -34,7 +28,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
 from homeassistant.helpers import config_entry_oauth2_flow
 
-from .const import DOMAIN, DEFAULT_PUBLISH_TIME, CONF_PUBLISH_TIME
+from .const import DOMAIN as INTEGRATION_DOMAIN, DEFAULT_PUBLISH_TIME, CONF_PUBLISH_TIME
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,9 +41,10 @@ def _generate_ems_instance_id() -> str:
     return f"ha-{uuid.uuid4().hex}"
 
 
-class TariffSaverConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domain=DOMAIN):
+class TariffSaverConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler):
     """Handle a config flow for Tariff Saver."""
 
+    DOMAIN = INTEGRATION_DOMAIN
     VERSION = 2
 
     @property
@@ -57,6 +52,7 @@ class TariffSaverConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, 
         return _LOGGER
 
     def __init__(self) -> None:
+        # NOTE: AbstractOAuth2FlowHandler requires DOMAIN to be set before __init__
         super().__init__()
         self._name: str | None = None
         self._mode: str | None = None
@@ -125,7 +121,6 @@ class TariffSaverConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, 
             self._publish_time = user_input.get(CONF_PUBLISH_TIME, DEFAULT_PUBLISH_TIME)
             self._ems_instance_id = _generate_ems_instance_id()
 
-            # IMPORTANT:
             # Pick implementation first (sets self.flow_impl), then HA continues to auth.
             return await self.async_step_pick_implementation()
 
