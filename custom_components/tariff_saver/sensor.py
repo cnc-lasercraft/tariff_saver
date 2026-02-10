@@ -658,100 +658,191 @@ class TariffSaverActualSavingsTodaySensor(_BasePeriodCostSensor):
 
 
 # Week
-class TariffSaverActualCostWeekSensor(TariffSaverActualCostTodaySensor):
+class TariffSaverActualCostWeekSensor(_BasePeriodCostSensor):
+    _attr_has_entity_name = True
     _attr_name = "Actual cost week"
+    _attr_icon = "mdi:cash"
+    _attr_state_class = "total"
     _store_fn_name = "compute_week_totals"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
-        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
-        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_actual_cost_week"
 
+    @property
+    def native_value(self) -> float | None:
+        t = self._totals()
+        if not t:
+            return None
+        dyn, _base, _sav = t
+        return round(dyn, 2)
 
-class TariffSaverBaselineCostWeekSensor(TariffSaverBaselineCostTodaySensor):
+
+class TariffSaverBaselineCostWeekSensor(_BasePeriodCostSensor):
+    _attr_has_entity_name = True
     _attr_name = "Baseline cost week"
+    _attr_icon = "mdi:cash-multiple"
+    _attr_state_class = "total"
     _store_fn_name = "compute_week_totals"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
-        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
-        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_baseline_cost_week"
 
+    @property
+    def native_value(self) -> float | None:
+        t = self._totals()
+        if not t:
+            return None
+        _dyn, base, _sav = t
+        return round(base, 2)
 
-class TariffSaverActualSavingsWeekSensor(TariffSaverActualSavingsTodaySensor):
+
+class TariffSaverActualSavingsWeekSensor(_BasePeriodCostSensor):
+    _attr_has_entity_name = True
     _attr_name = "Actual savings week"
+    _attr_icon = "mdi:piggy-bank"
+    _attr_state_class = "measurement"
     _store_fn_name = "compute_week_totals"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
-        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
-        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_actual_savings_week"
+
+    @property
+    def native_value(self) -> float | None:
+        t = self._totals()
+        if not t:
+            return None
+        _dyn, _base, sav = t
+        return round(sav, 2)
 
 
 # Month
-class TariffSaverActualCostMonthSensor(TariffSaverActualCostTodaySensor):
+class TariffSaverActualCostMonthSensor(_BasePeriodCostSensor):
+    _attr_has_entity_name = True
     _attr_name = "Actual cost month"
+    _attr_icon = "mdi:cash"
+    _attr_state_class = "total"
     _store_fn_name = "compute_month_totals"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
-        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
-        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_actual_cost_month"
 
+    @property
+    def native_value(self) -> float | None:
+        t = self._totals()
+        if not t:
+            return None
+        dyn, _base, _sav = t
+        return round(dyn, 2)
 
-class TariffSaverBaselineCostMonthSensor(TariffSaverBaselineCostTodaySensor):
+
+class TariffSaverBaselineCostMonthSensor(_BasePeriodCostSensor):
+    _attr_has_entity_name = True
     _attr_name = "Baseline cost month"
+    _attr_icon = "mdi:cash-multiple"
+    _attr_state_class = "total"
     _store_fn_name = "compute_month_totals"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
-        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
-        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_baseline_cost_month"
 
+    @property
+    def native_value(self) -> float | None:
+        t = self._totals()
+        if not t:
+            return None
+        _dyn, base, _sav = t
+        return round(base, 2)
 
-class TariffSaverActualSavingsMonthSensor(TariffSaverActualSavingsTodaySensor):
+
+class TariffSaverActualSavingsMonthSensor(_BasePeriodCostSensor):
+    _attr_has_entity_name = True
     _attr_name = "Actual savings month"
+    _attr_icon = "mdi:piggy-bank"
+    _attr_state_class = "measurement"
     _store_fn_name = "compute_month_totals"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
-        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
-        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_actual_savings_month"
+
+    @property
+    def native_value(self) -> float | None:
+        t = self._totals()
+        if not t:
+            return None
+        _dyn, _base, sav = t
+        return round(sav, 2)
 
 
 # Year
-class TariffSaverActualCostYearSensor(TariffSaverActualCostTodaySensor):
+class TariffSaverActualCostYearSensor(_BasePeriodCostSensor):
+    _attr_has_entity_name = True
     _attr_name = "Actual cost year"
+    _attr_icon = "mdi:cash"
+    _attr_state_class = "total"
     _store_fn_name = "compute_year_totals"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
-        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
-        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_actual_cost_year"
 
+    @property
+    def native_value(self) -> float | None:
+        t = self._totals()
+        if not t:
+            return None
+        dyn, _base, _sav = t
+        return round(dyn, 2)
 
-class TariffSaverBaselineCostYearSensor(TariffSaverBaselineCostTodaySensor):
+
+class TariffSaverBaselineCostYearSensor(_BasePeriodCostSensor):
+    _attr_has_entity_name = True
     _attr_name = "Baseline cost year"
+    _attr_icon = "mdi:cash-multiple"
+    _attr_state_class = "total"
     _store_fn_name = "compute_year_totals"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
-        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
-        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_baseline_cost_year"
 
+    @property
+    def native_value(self) -> float | None:
+        t = self._totals()
+        if not t:
+            return None
+        _dyn, base, _sav = t
+        return round(base, 2)
 
-class TariffSaverActualSavingsYearSensor(TariffSaverActualSavingsTodaySensor):
+
+class TariffSaverActualSavingsYearSensor(_BasePeriodCostSensor):
+    _attr_has_entity_name = True
     _attr_name = "Actual savings year"
+    _attr_icon = "mdi:piggy-bank"
+    _attr_state_class = "measurement"
     _store_fn_name = "compute_year_totals"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
-        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
-        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_actual_savings_year"
+
+    @property
+    def native_value(self) -> float | None:
+        t = self._totals()
+        if not t:
+            return None
+        _dyn, _base, sav = t
+        return round(sav, 2)
 
 
 # -------------------------------------------------------------------
 # Diagnostics
+
 # -------------------------------------------------------------------
 class TariffSaverLastApiSuccessSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
     """Timestamp of the last successful API data fetch (persistent)."""
