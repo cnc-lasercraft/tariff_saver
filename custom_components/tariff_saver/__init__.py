@@ -42,10 +42,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # ------------------------------------------------------------------
     oauth_session = None
     if config.get("mode") == "myekz":
-        # This requires:
-        # - manifest.json: "oauth2": true, "application_credentials": true
-        # - oauth2.py + application_credentials.py
-        oauth_session = config_entry_oauth2_flow.OAuth2Session(hass, entry)
+        # Create the OAuth2 implementation + session.
+        # This is the HA standard pattern.
+        implementation = await config_entry_oauth2_flow.async_get_config_entry_implementation(
+            hass, entry
+        )
+        oauth_session = config_entry_oauth2_flow.OAuth2Session(
+            hass, entry, implementation
+        )
 
     api = EkzTariffApi(session, oauth_session=oauth_session)
 
