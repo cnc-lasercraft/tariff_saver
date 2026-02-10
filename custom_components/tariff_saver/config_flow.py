@@ -1,10 +1,15 @@
 """Config flow for Tariff Saver (Public + myEKZ OAuth2).
 
-Fix for HA versions where AbstractOAuth2FlowHandler requires the class attribute
-DOMAIN (uppercase) to be set (not just the decorator argument).
+Fixes:
+- Use the canonical class name: ConfigFlow
+- Register handler via (domain=DOMAIN) in the class definition
+- Also set class attribute DOMAIN for HA versions that require it
 
-Also:
-- myEKZ: collects redirect_uri + publish_time, generates ems_instance_id,
+This should resolve: "Invalid handler specified".
+
+Flow behavior:
+- Public mode: creates entry immediately.
+- myEKZ mode: asks for redirect_uri + publish_time, generates ems_instance_id,
   then starts OAuth2 via async_step_pick_implementation().
 - After OAuth success: async_step_auth_create_entry creates the entry.
 
@@ -28,7 +33,7 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
 from homeassistant.helpers import config_entry_oauth2_flow
 
-from .const import DOMAIN as INTEGRATION_DOMAIN, DEFAULT_PUBLISH_TIME, CONF_PUBLISH_TIME
+from .const import DOMAIN, DEFAULT_PUBLISH_TIME, CONF_PUBLISH_TIME
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,10 +46,11 @@ def _generate_ems_instance_id() -> str:
     return f"ha-{uuid.uuid4().hex}"
 
 
-class TariffSaverConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler):
+class ConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domain=DOMAIN):
     """Handle a config flow for Tariff Saver."""
 
-    DOMAIN = INTEGRATION_DOMAIN
+    # Some HA versions require this attribute too
+    DOMAIN = DOMAIN
     VERSION = 2
 
     @property
@@ -52,7 +58,6 @@ class TariffSaverConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler):
         return _LOGGER
 
     def __init__(self) -> None:
-        # NOTE: AbstractOAuth2FlowHandler requires DOMAIN to be set before __init__
         super().__init__()
         self._name: str | None = None
         self._mode: str | None = None
