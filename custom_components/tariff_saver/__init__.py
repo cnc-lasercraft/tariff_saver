@@ -42,14 +42,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # ------------------------------------------------------------------
     oauth_session = None
     if config.get("mode") == "myekz":
-        # Create the OAuth2 implementation + session.
-        # This is the HA standard pattern.
+        # auth_implementation is only present after a successful OAuth flow.
+        # If it's missing, the config entry was created without the OAuth step.
+        auth_impl = entry.data.get("auth_implementation")
+        if not auth_impl:
+            raise ValueError(
+                "myEKZ mode selected but OAuth2 was not completed "
+                "(missing entry.data['auth_implementation']). "
+                "Please remove the integration and add it again, then complete the login."
+            )
+
         implementation = await config_entry_oauth2_flow.async_get_config_entry_implementation(
             hass, entry
         )
-        oauth_session = config_entry_oauth2_flow.OAuth2Session(
-            hass, entry, implementation
-        )
+        oauth_session = config_entry_oauth2_flow.OAuth2Session(hass, entry, implementation)
 
     api = EkzTariffApi(session, oauth_session=oauth_session)
 
