@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
@@ -13,6 +13,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.entity import EntityCategory
+from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
@@ -23,6 +24,7 @@ from .coordinator import TariffSaverCoordinator, PriceSlot
 # Helpers
 # -------------------------------------------------------------------
 CONF_CONSUMPTION_ENERGY_ENTITY = "consumption_energy_entity"
+SIGNAL_STORE_UPDATED = "tariff_saver_store_updated"
 
 
 def _active_slots(coordinator: TariffSaverCoordinator) -> list[PriceSlot]:
@@ -136,7 +138,7 @@ async def async_setup_entry(
     """Set up sensors from a config entry."""
     coordinator: TariffSaverCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    # Track energy samples -> finalize 15-min slots -> persist -> update cost sensors
+    # Track energy samples -> finalize 15-min slots -> persist -> notify cost sensors
     energy_entity = entry.options.get(CONF_CONSUMPTION_ENERGY_ENTITY) or entry.data.get(CONF_CONSUMPTION_ENERGY_ENTITY)
     if isinstance(energy_entity, str) and energy_entity:
 
@@ -169,21 +171,9 @@ async def async_setup_entry(
             if store.dirty:
                 hass.async_create_task(store.async_save())
 
-            # cost sensors aktualisieren, wenn was Neues gebucht wurde
+            # notify sensors if something changed
             if newly > 0:
-                for ent in (
-                    "sensor.actual_cost_today",
-                    "sensor.baseline_cost_today",
-                    "sensor.actual_savings_today",
-                ):
-                    hass.async_create_task(
-                        hass.services.async_call(
-                            "homeassistant",
-                            "update_entity",
-                            {"entity_id": ent},
-                            blocking=False,
-                        )
-                    )
+                async_dispatcher_send(hass, f"{SIGNAL_STORE_UPDATED}_{entry.entry_id}")
 
         unsub = async_track_state_change_event(hass, [energy_entity], _on_energy_change)
         hass.data[DOMAIN][f"{entry.entry_id}_unsub_energy_cost"] = unsub
@@ -202,10 +192,22 @@ async def async_setup_entry(
             TariffSaverTariffStarsNowSensor(coordinator, entry),
             TariffSaverTariffStarsOutlookSensor(coordinator, entry),
 
-            # costs (today) from booked slots
+            # costs (periods) from booked slots
             TariffSaverActualCostTodaySensor(coordinator, entry),
             TariffSaverBaselineCostTodaySensor(coordinator, entry),
             TariffSaverActualSavingsTodaySensor(coordinator, entry),
+
+            TariffSaverActualCostWeekSensor(coordinator, entry),
+            TariffSaverBaselineCostWeekSensor(coordinator, entry),
+            TariffSaverActualSavingsWeekSensor(coordinator, entry),
+
+            TariffSaverActualCostMonthSensor(coordinator, entry),
+            TariffSaverBaselineCostMonthSensor(coordinator, entry),
+            TariffSaverActualSavingsMonthSensor(coordinator, entry),
+
+            TariffSaverActualCostYearSensor(coordinator, entry),
+            TariffSaverBaselineCostYearSensor(coordinator, entry),
+            TariffSaverActualSavingsYearSensor(coordinator, entry),
 
             # diagnostics
             TariffSaverLastApiSuccessSensor(coordinator, entry),
@@ -552,28 +554,55 @@ class TariffSaverTariffStarsOutlookSensor(CoordinatorEntity[TariffSaverCoordinat
 
 
 # -------------------------------------------------------------------
-# Today cost sensors (from booked slots)
+# Period cost sensors (from booked slots)
 # -------------------------------------------------------------------
-class _BaseTodayCostSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity, RestoreEntity):
+class _BasePeriodCostSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity, RestoreEntity):
     _attr_native_unit_of_measurement = "CHF"
     _attr_icon = "mdi:currency-chf"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self.entry = entry
+        self._unsub = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+
+        @callback
+        def _on_store_update() -> None:
+            self.async_write_ha_state()
+
+        self._unsub = async_dispatcher_connect(
+            self.hass,
+            f"{SIGNAL_STORE_UPDATED}_{self.entry.entry_id}",
+            _on_store_update,
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub:
+            self._unsub()
+            self._unsub = None
+        await super().async_will_remove_from_hass()
 
     def _totals(self) -> tuple[float, float, float] | None:
         store = getattr(self.coordinator, "store", None)
         if store is None:
             return None
-        return store.compute_today_totals()
+        fn = getattr(store, self._store_fn_name, None)
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception:
+            return None
 
 
-class TariffSaverActualCostTodaySensor(_BaseTodayCostSensor):
+class TariffSaverActualCostTodaySensor(_BasePeriodCostSensor):
     _attr_has_entity_name = True
     _attr_name = "Actual cost today"
     _attr_icon = "mdi:cash"
     _attr_state_class = "total"
+    _store_fn_name = "compute_today_totals"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
@@ -588,11 +617,12 @@ class TariffSaverActualCostTodaySensor(_BaseTodayCostSensor):
         return round(dyn, 2)
 
 
-class TariffSaverBaselineCostTodaySensor(_BaseTodayCostSensor):
+class TariffSaverBaselineCostTodaySensor(_BasePeriodCostSensor):
     _attr_has_entity_name = True
     _attr_name = "Baseline cost today"
     _attr_icon = "mdi:cash-multiple"
     _attr_state_class = "total"
+    _store_fn_name = "compute_today_totals"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
@@ -607,11 +637,12 @@ class TariffSaverBaselineCostTodaySensor(_BaseTodayCostSensor):
         return round(base, 2)
 
 
-class TariffSaverActualSavingsTodaySensor(_BaseTodayCostSensor):
+class TariffSaverActualSavingsTodaySensor(_BasePeriodCostSensor):
     _attr_has_entity_name = True
     _attr_name = "Actual savings today"
     _attr_icon = "mdi:piggy-bank"
     _attr_state_class = "measurement"
+    _store_fn_name = "compute_today_totals"
 
     def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
@@ -624,6 +655,99 @@ class TariffSaverActualSavingsTodaySensor(_BaseTodayCostSensor):
             return None
         _dyn, _base, sav = t
         return round(sav, 2)
+
+
+# Week
+class TariffSaverActualCostWeekSensor(TariffSaverActualCostTodaySensor):
+    _attr_name = "Actual cost week"
+    _store_fn_name = "compute_week_totals"
+
+    def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
+        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_actual_cost_week"
+
+
+class TariffSaverBaselineCostWeekSensor(TariffSaverBaselineCostTodaySensor):
+    _attr_name = "Baseline cost week"
+    _store_fn_name = "compute_week_totals"
+
+    def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
+        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_baseline_cost_week"
+
+
+class TariffSaverActualSavingsWeekSensor(TariffSaverActualSavingsTodaySensor):
+    _attr_name = "Actual savings week"
+    _store_fn_name = "compute_week_totals"
+
+    def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
+        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_actual_savings_week"
+
+
+# Month
+class TariffSaverActualCostMonthSensor(TariffSaverActualCostTodaySensor):
+    _attr_name = "Actual cost month"
+    _store_fn_name = "compute_month_totals"
+
+    def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
+        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_actual_cost_month"
+
+
+class TariffSaverBaselineCostMonthSensor(TariffSaverBaselineCostTodaySensor):
+    _attr_name = "Baseline cost month"
+    _store_fn_name = "compute_month_totals"
+
+    def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
+        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_baseline_cost_month"
+
+
+class TariffSaverActualSavingsMonthSensor(TariffSaverActualSavingsTodaySensor):
+    _attr_name = "Actual savings month"
+    _store_fn_name = "compute_month_totals"
+
+    def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
+        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_actual_savings_month"
+
+
+# Year
+class TariffSaverActualCostYearSensor(TariffSaverActualCostTodaySensor):
+    _attr_name = "Actual cost year"
+    _store_fn_name = "compute_year_totals"
+
+    def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
+        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_actual_cost_year"
+
+
+class TariffSaverBaselineCostYearSensor(TariffSaverBaselineCostTodaySensor):
+    _attr_name = "Baseline cost year"
+    _store_fn_name = "compute_year_totals"
+
+    def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
+        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_baseline_cost_year"
+
+
+class TariffSaverActualSavingsYearSensor(TariffSaverActualSavingsTodaySensor):
+    _attr_name = "Actual savings year"
+    _store_fn_name = "compute_year_totals"
+
+    def __init__(self, coordinator: TariffSaverCoordinator, entry: ConfigEntry) -> None:
+        super(_BasePeriodCostSensor, self).__init__()  # type: ignore[misc]
+        _BasePeriodCostSensor.__init__(self, coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_actual_savings_year"
 
 
 # -------------------------------------------------------------------
