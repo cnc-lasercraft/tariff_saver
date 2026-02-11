@@ -1,16 +1,20 @@
-"""Lightweight persistent storage for Tariff Saver.
+"""Persistent storage for Tariff Saver (backwards compatible).
 
-Backwards compatible storage.
+Stores:
+- price_slots (UTC 15-min): dynamic + optional baseline component prices (CHF/kWh)
+- energy samples (UTC timestamps of cumulative kWh)
+- booked 15-min slots (UTC start) with kWh + costs per component (CHF)
 
-Supports legacy formats:
+Legacy supported:
 - v2: samples as list[[iso_ts, kwh_total], ...]
-- v2: booked_slots as dict[slot_start_iso -> {kwh, dyn_chf, base_chf, status, ...}]
-- v2: price_slots as dict[slot_start_iso -> {dyn, base}]
+- v2: booked_slots as dict[slot_start_iso -> {...}]
+- v2: price_slots as dict[slot_start_iso -> {"dyn":..,"base":..}] (electricity-only)
+- v3: samples as list[{"ts": epoch, "kwh": float}], booked as list
 
-Current format (v3+):
-- samples: list[{"ts": epoch_seconds, "kwh": float}, ...]
-- booked: list[{"start": iso_utc, "kwh": float, "dyn_chf": float, "base_chf": float, "savings_chf": float, "status": str}, ...]
-- price_slots: unchanged (iso -> {"dyn": float, "base": float|None})
+Current (v4):
+- price_slots: dict[slot_start_iso -> {"dyn": {comp: val}, "base": {comp: val}|None, "api_integrated": float|None}]
+- booked: list[{"start": iso, "kwh": float, "status": str,
+               "dyn": {comp: chf}, "base": {comp: chf}, "sav": {comp: chf}}]
 """
 from __future__ import annotations
 
@@ -22,10 +26,17 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 
-class TariffSaverStore:
-    """Persists recent energy samples, price slots and finalized 15-min slots."""
+IMPORT_ALLIN_COMPONENTS = [
+    "electricity",
+    "grid",
+    "regional_fees",
+    "metering",
+    "refund_storage",
+]
 
-    STORAGE_VERSION = 3
+
+class TariffSaverStore:
+    STORAGE_VERSION = 4
     STORAGE_KEY = "tariff_saver"
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
@@ -33,7 +44,7 @@ class TariffSaverStore:
         self.entry_id = entry_id
         self._store = Store(hass, self.STORAGE_VERSION, f"{self.STORAGE_KEY}.{entry_id}")
 
-        self.price_slots: dict[str, dict[str, float | None]] = {}
+        self.price_slots: dict[str, dict[str, Any]] = {}
         self.samples: list[dict[str, float]] = []
         self.booked: list[dict[str, Any]] = []
         self.last_api_success_utc: datetime | None = None
@@ -42,16 +53,27 @@ class TariffSaverStore:
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
+
+        self.price_slots = {}
         raw_price_slots = data.get("price_slots") or {}
-        raw_samples = data.get("samples") or []
-        raw_booked = data.get("booked")
-        raw_booked_slots = data.get("booked_slots")
+        if isinstance(raw_price_slots, dict):
+            for k, v in raw_price_slots.items():
+                if not isinstance(k, str) or not isinstance(v, dict):
+                    continue
+                if isinstance(v.get("dyn"), (int, float)):
+                    dyn = float(v.get("dyn", 0.0))
+                    base = v.get("base")
+                    base_f = float(base) if isinstance(base, (int, float)) else None
+                    self.price_slots[k] = {
+                        "dyn": {"electricity": dyn},
+                        "base": {"electricity": base_f} if base_f is not None else None,
+                        "api_integrated": None,
+                    }
+                elif isinstance(v.get("dyn"), dict):
+                    self.price_slots[k] = dict(v)
 
-        # price_slots: legacy and current are both dict[iso -> {"dyn":..,"base":..}]
-        self.price_slots = dict(raw_price_slots) if isinstance(raw_price_slots, dict) else {}
-
-        # samples: accept v3 dicts OR v2 pairs [iso, kwh]
         self.samples = []
+        raw_samples = data.get("samples") or []
         if isinstance(raw_samples, list):
             for item in raw_samples:
                 if isinstance(item, dict) and "ts" in item and "kwh" in item:
@@ -69,42 +91,36 @@ class TariffSaverStore:
                         continue
                     self.samples.append({"ts": dt_util.as_utc(dtp).timestamp(), "kwh": kwh})
 
-        # booked: accept v3 list OR v2 booked_slots dict
         self.booked = []
+        raw_booked = data.get("booked")
+        raw_booked_slots = data.get("booked_slots")
         if isinstance(raw_booked, list):
             for b in raw_booked:
                 if isinstance(b, dict) and "start" in b:
+                    if "dyn" not in b and ("dyn_chf" in b or "base_chf" in b or "savings_chf" in b):
+                        dyn = float(b.get("dyn_chf", 0.0) or 0.0)
+                        base = float(b.get("base_chf", 0.0) or 0.0)
+                        sav = float(b.get("savings_chf", 0.0) or 0.0)
+                        b = dict(b)
+                        b.pop("dyn_chf", None)
+                        b.pop("base_chf", None)
+                        b.pop("savings_chf", None)
+                        b["dyn"] = {"electricity": dyn}
+                        b["base"] = {"electricity": base}
+                        b["sav"] = {"electricity": sav}
                     self.booked.append(dict(b))
         elif isinstance(raw_booked_slots, dict):
             for start_iso, payload in raw_booked_slots.items():
                 if not isinstance(start_iso, str) or not isinstance(payload, dict):
                     continue
-                try:
-                    kwh = float(payload.get("kwh", 0.0))
-                except Exception:
-                    kwh = 0.0
-                try:
-                    dyn = float(payload.get("dyn_chf", payload.get("dyn", 0.0)))
-                except Exception:
-                    dyn = 0.0
-                try:
-                    base = float(payload.get("base_chf", payload.get("base", 0.0)))
-                except Exception:
-                    base = 0.0
-                try:
-                    sav = float(payload.get("savings_chf", payload.get("sav", 0.0)))
-                except Exception:
-                    sav = 0.0
+                kwh = float(payload.get("kwh", 0.0) or 0.0)
+                dyn = float(payload.get("dyn_chf", payload.get("dyn", 0.0)) or 0.0)
+                base = float(payload.get("base_chf", payload.get("base", 0.0)) or 0.0)
+                sav = float(payload.get("savings_chf", payload.get("sav", 0.0)) or 0.0)
                 status = str(payload.get("status", "ok" if dyn or base else "unpriced"))
                 self.booked.append(
-                    {
-                        "start": start_iso,
-                        "kwh": kwh,
-                        "dyn_chf": dyn,
-                        "base_chf": base,
-                        "savings_chf": sav,
-                        "status": status,
-                    }
+                    {"start": start_iso, "kwh": kwh, "status": status,
+                     "dyn": {"electricity": dyn}, "base": {"electricity": base}, "sav": {"electricity": sav}}
                 )
             self.booked.sort(key=lambda x: str(x.get("start", "")))
 
@@ -115,7 +131,6 @@ class TariffSaverStore:
         else:
             self.last_api_success_utc = None
 
-        # mark dirty so it gets saved in v3 format
         self.dirty = True
 
     async def async_save(self) -> None:
@@ -134,25 +149,40 @@ class TariffSaverStore:
         self.last_api_success_utc = dt_util.as_utc(when_utc)
         self.dirty = True
 
-    def set_price_slot(self, start_utc: datetime, dyn_chf_per_kwh: float, base_chf_per_kwh: float | None) -> None:
+    def set_price_slot(
+        self,
+        start_utc: datetime,
+        dyn_components_chf_per_kwh: dict[str, float],
+        base_components_chf_per_kwh: dict[str, float] | None = None,
+        api_integrated: float | None = None,
+    ) -> None:
         start_utc = dt_util.as_utc(start_utc)
         key = start_utc.isoformat()
+
+        dyn = {k: float(v) for k, v in (dyn_components_chf_per_kwh or {}).items() if isinstance(v, (int, float))}
+        base = None
+        if base_components_chf_per_kwh:
+            base = {k: float(v) for k, v in base_components_chf_per_kwh.items() if isinstance(v, (int, float))}
+
         self.price_slots[key] = {
-            "dyn": float(dyn_chf_per_kwh),
-            "base": float(base_chf_per_kwh) if base_chf_per_kwh is not None else None,
+            "dyn": dyn,
+            "base": base,
+            "api_integrated": float(api_integrated) if isinstance(api_integrated, (int, float)) else None,
         }
         self.dirty = True
 
-    def get_price_slot(self, start_utc: datetime) -> tuple[float | None, float | None]:
+    def get_price_components(self, start_utc: datetime) -> tuple[dict[str, float] | None, dict[str, float] | None, float | None]:
         key = dt_util.as_utc(start_utc).isoformat()
         slot = self.price_slots.get(key)
-        if not slot:
-            return None, None
+        if not isinstance(slot, dict):
+            return None, None, None
         dyn = slot.get("dyn")
         base = slot.get("base")
+        api_int = slot.get("api_integrated")
         return (
-            float(dyn) if isinstance(dyn, (int, float)) else None,
-            float(base) if isinstance(base, (int, float)) else None,
+            dict(dyn) if isinstance(dyn, dict) else None,
+            dict(base) if isinstance(base, dict) else None,
+            float(api_int) if isinstance(api_int, (int, float)) else None,
         )
 
     def trim_price_slots(self, keep_days: int = 7) -> None:
@@ -188,15 +218,18 @@ class TariffSaverStore:
         minute = (ts_utc.minute // 15) * 15
         return ts_utc.replace(minute=minute, second=0, microsecond=0)
 
-    def _append_booked(self, start_utc: datetime, kwh: float, dyn_chf: float, base_chf: float, sav: float, status: str) -> None:
+    def _append_booked(self, start_utc: datetime, kwh: float, status: str,
+                       dyn: dict[str, float] | None = None,
+                       base: dict[str, float] | None = None,
+                       sav: dict[str, float] | None = None) -> None:
         self.booked.append(
             {
                 "start": dt_util.as_utc(start_utc).isoformat(),
                 "kwh": float(kwh),
-                "dyn_chf": float(dyn_chf),
-                "base_chf": float(base_chf),
-                "savings_chf": float(sav),
                 "status": str(status),
+                "dyn": dict(dyn or {}),
+                "base": dict(base or {}),
+                "sav": dict(sav or {}),
             }
         )
 
@@ -259,30 +292,45 @@ class TariffSaverStore:
             kwh_end = kwh_at(slot_end)
 
             if kwh_start is None or kwh_end is None:
-                self._append_booked(cursor, 0.0, 0.0, 0.0, 0.0, "missing_samples")
+                self._append_booked(cursor, 0.0, "missing_samples")
                 newly += 1
                 cursor += timedelta(minutes=15)
                 continue
 
             delta = float(kwh_end - kwh_start)
             if delta < 0:
-                self._append_booked(cursor, 0.0, 0.0, 0.0, 0.0, "invalid")
+                self._append_booked(cursor, 0.0, "invalid")
                 newly += 1
                 cursor += timedelta(minutes=15)
                 continue
 
-            dyn_p, base_p = self.get_price_slot(cursor)
-            if dyn_p is None or dyn_p <= 0:
-                self._append_booked(cursor, delta, 0.0, 0.0, 0.0, "unpriced")
+            dyn_prices, base_prices, _api_int = self.get_price_components(cursor)
+            if not dyn_prices:
+                self._append_booked(cursor, delta, "unpriced")
                 newly += 1
                 cursor += timedelta(minutes=15)
                 continue
 
-            dyn_chf = delta * float(dyn_p)
-            base_chf = delta * float(base_p) if base_p is not None and base_p > 0 else 0.0
-            sav = base_chf - dyn_chf if base_chf > 0 else 0.0
+            dyn_cost: dict[str, float] = {}
+            base_cost: dict[str, float] = {}
+            sav_cost: dict[str, float] = {}
 
-            self._append_booked(cursor, delta, dyn_chf, base_chf, sav, "ok")
+            for comp, p in dyn_prices.items():
+                if isinstance(p, (int, float)) and float(p) != 0.0:
+                    dyn_cost[comp] = delta * float(p)
+
+            if base_prices:
+                for comp, p in base_prices.items():
+                    if isinstance(p, (int, float)) and float(p) != 0.0:
+                        base_cost[comp] = delta * float(p)
+
+            for comp, bchf in base_cost.items():
+                dchf = dyn_cost.get(comp)
+                if dchf is not None:
+                    sav_cost[comp] = bchf - dchf
+
+            status = "ok" if dyn_cost else "unpriced"
+            self._append_booked(cursor, delta, status, dyn_cost, base_cost, sav_cost)
             newly += 1
             cursor += timedelta(minutes=15)
 
@@ -291,11 +339,12 @@ class TariffSaverStore:
             self.dirty = True
         return newly
 
-    def _sum_between_local(self, start_local: datetime, end_local: datetime) -> tuple[float, float, float]:
+    def _sum_between_local(self, start_local: datetime, end_local: datetime) -> dict[str, dict[str, float]]:
         start_utc = dt_util.as_utc(start_local)
         end_utc = dt_util.as_utc(end_local)
 
-        dyn = base = sav = 0.0
+        out: dict[str, dict[str, float]] = {"dyn": {}, "base": {}, "sav": {}}
+
         for b in self.booked:
             dtp = dt_util.parse_datetime(str(b.get("start", "")))
             if dtp is None:
@@ -303,37 +352,55 @@ class TariffSaverStore:
             s_utc = dt_util.as_utc(dtp)
             if not (start_utc <= s_utc < end_utc):
                 continue
-            try:
-                dyn += float(b.get("dyn_chf", 0.0))
-                base += float(b.get("base_chf", 0.0))
-                sav += float(b.get("savings_chf", 0.0))
-            except Exception:
-                continue
-        return dyn, base, sav
 
-    def compute_today_totals(self) -> tuple[float, float, float]:
+            for bucket in ("dyn", "base", "sav"):
+                m = b.get(bucket)
+                if not isinstance(m, dict):
+                    continue
+                for comp, val in m.items():
+                    if isinstance(val, (int, float)):
+                        out[bucket][comp] = out[bucket].get(comp, 0.0) + float(val)
+
+        return out
+
+    @staticmethod
+    def _period_bounds(period: str) -> tuple[datetime, datetime]:
         now = dt_util.now()
+        if period == "today":
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            return start, start + timedelta(days=1)
+        if period == "week":
+            start = (now - timedelta(days=now.isoweekday() - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            return start, start + timedelta(days=7)
+        if period == "month":
+            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if start.month == 12:
+                end = start.replace(year=start.year + 1, month=1)
+            else:
+                end = start.replace(month=start.month + 1)
+            return start, end
+        if period == "year":
+            start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            return start, start.replace(year=start.year + 1)
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start + timedelta(days=1)
+        return start, start + timedelta(days=1)
+
+    def compute_period_breakdown(self, period: str) -> dict[str, dict[str, float]]:
+        start, end = self._period_bounds(period)
         return self._sum_between_local(start, end)
 
-    def compute_week_totals(self) -> tuple[float, float, float]:
-        now = dt_util.now()
-        start = (now - timedelta(days=now.isoweekday() - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start + timedelta(days=7)
-        return self._sum_between_local(start, end)
+    def compute_today_breakdown(self) -> dict[str, dict[str, float]]:
+        return self.compute_period_breakdown("today")
 
-    def compute_month_totals(self) -> tuple[float, float, float]:
-        now = dt_util.now()
-        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        if start.month == 12:
-            end = start.replace(year=start.year + 1, month=1)
-        else:
-            end = start.replace(month=start.month + 1)
-        return self._sum_between_local(start, end)
+    def compute_week_breakdown(self) -> dict[str, dict[str, float]]:
+        return self.compute_period_breakdown("week")
 
-    def compute_year_totals(self) -> tuple[float, float, float]:
-        now = dt_util.now()
-        start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        end = start.replace(year=start.year + 1)
-        return self._sum_between_local(start, end)
+    def compute_month_breakdown(self) -> dict[str, dict[str, float]]:
+        return self.compute_period_breakdown("month")
+
+    def compute_year_breakdown(self) -> dict[str, dict[str, float]]:
+        return self.compute_period_breakdown("year")
+
+    @staticmethod
+    def sum_components(m: dict[str, float], components: list[str]) -> float:
+        return sum(float(m.get(c, 0.0) or 0.0) for c in components)
