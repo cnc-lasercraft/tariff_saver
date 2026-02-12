@@ -125,14 +125,10 @@ class TariffSaverCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if s.electricity_chf_per_kwh <= 0:
                     continue
                 base_comps = base_map.get(s.start)
-                api_integrated = None
-                if isinstance(s.components_chf_per_kwh.get("integrated"), (int, float)):
-                    api_integrated = float(s.components_chf_per_kwh["integrated"])
                 self.store.set_price_slot(
                     s.start,
                     dyn_components_chf_per_kwh=s.components_chf_per_kwh,
                     base_components_chf_per_kwh=base_comps,
-                    api_integrated=api_integrated,
                 )
 
             self.store.trim_price_slots(keep_days=7)
