@@ -20,6 +20,18 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 
+# Components we treat as "all-in" parts of the price (CHF/kWh).
+# The EKZ API may provide some or all of these fields per slot.
+IMPORT_ALLIN_COMPONENTS: tuple[str, ...] = (
+    "integrated",
+    "electricity",
+    "grid",
+    "regional_fees",
+    "metering",
+    "refund_storage",
+    "feed_in",
+)
+
 class TariffSaverStore:
     """Persists recent energy samples, price slots and finalized 15-min slots."""
 
