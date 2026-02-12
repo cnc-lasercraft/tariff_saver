@@ -24,7 +24,7 @@ class TariffSaverStore:
     """Persists recent energy samples, price slots and finalized 15-min slots."""
 
     # IMPORTANT: do NOT bump STORE version unless you also provide a migrate func.
-    STORAGE_VERSION = 3
+    STORAGE_VERSION = 2
     STORAGE_KEY = "tariff_saver"
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
