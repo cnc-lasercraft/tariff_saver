@@ -37,6 +37,27 @@ def _baseline_slots(coordinator: TariffSaverCoordinator) -> list[PriceSlot]:
     return data.get("baseline", []) if isinstance(data, dict) else []
 
 
+def _slot_price(slot: PriceSlot) -> float | None:
+    """Return the slot price as float (backwards compatible)."""
+    v = getattr(slot, "price_chf_per_kwh", None)
+    if isinstance(v, (int, float)):
+        return float(v)
+    v = getattr(slot, "electricity_chf_per_kwh", None)
+    if isinstance(v, (int, float)):
+        return float(v)
+    return None
+
+
+def _slot_components(slot: PriceSlot) -> dict[str, float]:
+    """Return per-component CHF/kWh mapping (backwards compatible)."""
+    v = getattr(slot, "components", None)
+    if isinstance(v, dict):
+        return {str(k): float(val) for k, val in v.items() if isinstance(val, (int, float))}
+    v = getattr(slot, "components_chf_per_kwh", None)
+    if isinstance(v, dict):
+        return {str(k): float(val) for k, val in v.items() if isinstance(val, (int, float))}
+    return {}
+
 def _current_slot(slots: list[PriceSlot]) -> PriceSlot | None:
     """Return current slot; fallback to first slot if we're between slots."""
     if not slots:
@@ -91,7 +112,7 @@ def _avg(values: list[float]) -> float | None:
 def _avg_future_from_now(slots: list[PriceSlot]) -> float | None:
     """Average active price from now (UTC) until end of available data."""
     now = dt_util.utcnow()
-    vals = [s.price_chf_per_kwh for s in slots if s.price_chf_per_kwh > 0 and s.start >= now]
+    vals = [_slot_price(s) for s in slots if (_slot_price(s) or 0) > 0 and s.start >= now]
     return _avg(vals)
 
 
@@ -114,9 +135,9 @@ def _stars_for_horizon(coordinator: TariffSaverCoordinator, minutes: int) -> tup
     end = now + timedelta(minutes=minutes)
 
     prices = [
-        s.price_chf_per_kwh
+        _slot_price(s)
         for s in _active_slots(coordinator)
-        if s.price_chf_per_kwh > 0 and now <= s.start < end
+        if (_slot_price(s) or 0) > 0 and now <= s.start < end
     ]
     if not prices:
         return None, None, None
@@ -271,7 +292,7 @@ class TariffSaverPriceCurveSensor(CoordinatorEntity[TariffSaverCoordinator], Sen
     def extra_state_attributes(self) -> dict[str, Any]:
         active = _active_slots(self.coordinator)
         baseline = _baseline_slots(self.coordinator)
-        baseline_map = {s.start: s.price_chf_per_kwh for s in baseline} if baseline else {}
+        baseline_map = {s.start: _slot_price(s) for s in baseline} if baseline else {}
 
         return {
             "tariff_name": getattr(self.coordinator, "tariff_name", None),
@@ -280,7 +301,7 @@ class TariffSaverPriceCurveSensor(CoordinatorEntity[TariffSaverCoordinator], Sen
             "slots": [
                 {
                     "start": s.start.isoformat(),
-                    "price_chf_per_kwh": s.price_chf_per_kwh,
+                    "price_chf_per_kwh": _slot_price(s),
                     "baseline_chf_per_kwh": baseline_map.get(s.start),
                 }
                 for s in active
@@ -303,7 +324,7 @@ class TariffSaverPriceNowSensor(CoordinatorEntity[TariffSaverCoordinator], Senso
     @property
     def native_value(self) -> float | None:
         slot = _current_slot(_active_slots(self.coordinator))
-        return slot.price_chf_per_kwh if slot else None
+        return _slot_price(slot) if slot else None
 
 
 class TariffSaverNextPriceSensor(CoordinatorEntity[TariffSaverCoordinator], SensorEntity):
@@ -326,7 +347,7 @@ class TariffSaverNextPriceSensor(CoordinatorEntity[TariffSaverCoordinator], Sens
         now = dt_util.utcnow()
         for s in slots:
             if s.start > now:
-                return s.price_chf_per_kwh
+                return _slot_price(s)
         return None
 
 
@@ -349,7 +370,7 @@ class TariffSaverSavingsNext24hSensor(CoordinatorEntity[TariffSaverCoordinator],
         if not active or not baseline:
             return None
 
-        base_map = {s.start: s.price_chf_per_kwh for s in baseline}
+        base_map = {s.start: _slot_price(s) for s in baseline}
         kwh_per_slot = 0.25  # 1kW assumed for 15 minutes
 
         savings = 0.0
@@ -358,7 +379,7 @@ class TariffSaverSavingsNext24hSensor(CoordinatorEntity[TariffSaverCoordinator],
             base = base_map.get(s.start)
             if base is None:
                 continue
-            savings += (base - s.price_chf_per_kwh) * kwh_per_slot
+            savings += (base - _slot_price(s)) * kwh_per_slot
             matched += 1
 
         return round(savings, 2) if matched else None
@@ -378,7 +399,7 @@ class TariffSaverCheapestWindowsSensor(CoordinatorEntity[TariffSaverCoordinator]
 
     @staticmethod
     def _best_window(slots: list[PriceSlot], window_slots: int) -> dict[str, Any] | None:
-        slots = [s for s in slots if s.price_chf_per_kwh > 0]
+        slots = [s for s in slots if (_slot_price(s) or 0) > 0]
         if len(slots) < window_slots:
             return None
 
@@ -388,7 +409,7 @@ class TariffSaverCheapestWindowsSensor(CoordinatorEntity[TariffSaverCoordinator]
 
         for i in range(len(slots) - window_slots + 1):
             window = slots[i : i + window_slots]
-            window_sum = sum(x.price_chf_per_kwh for x in window)
+            window_sum = sum((_slot_price(x) or 0) for x in window)
             if window_sum < best_sum:
                 best_sum = window_sum
                 best_start = window[0].start
